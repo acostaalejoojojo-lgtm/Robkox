@@ -1,0 +1,49 @@
+{
+  "users": {
+    "Invitado": {
+      "username": "Invitado",
+      "displayName": "Invitado",
+      "robux": 1540,
+      "friends": [],
+      "avatarConfig": {
+        "bodyColors": {
+          "head": "#FFFFFF",
+          "torso": "#0D5ABD",
+          "leftArm": "#F5CD30",
+          "rightArm": "#F5CD30",
+          "leftLeg": "#A2C429",
+          "rightLeg": "#A2C429"
+        },
+        "faceTextureUrl": null,
+        "accessories": {
+          "hatModelUrl": "",
+          "shirtTextureUrl": null
+        },
+        "hideFace": false,
+        "faceVideoUrl": null
+      },
+      "settings": {
+        "language": "es",
+        "backgroundColor": "#1a1b1e"
+      }
+    }
+  },
+  "games": [
+    {
+      "id": "1",
+      "title": "Voxel City RP",
+      "creator": "VoxelSphere",
+      "thumbnail": "https://picsum.photos/seed/city/768/432",
+      "likes": "94%",
+      "playing": 450000
+    },
+    {
+      "id": "2",
+      "title": "Tower of Voxels",
+      "creator": "User123",
+      "thumbnail": "https://picsum.photos/seed/tower/768/432",
+      "likes": "88%",
+      "playing": 12000
+    }
+  ]
+}
