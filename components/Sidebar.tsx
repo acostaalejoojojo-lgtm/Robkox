@@ -60,7 +60,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, currentPage, onNavigat
       <div className="mt-auto p-4">
         {isOpen && (
              <div className="text-xs text-gray-500">
-               <p>© 2024 VoxelSphere Corp.</p>
+               <p>© 2024 Glidrovia Corp.</p>
                <p className="mt-1">Términos • Privacidad</p>
              </div>
         )}

@@ -1,18 +1,28 @@
 
 export interface User {
+  uid: string;
   username: string;
   displayName: string;
   robux: number;
+  drovis: number; // New currency
   avatarUrl?: string; 
-  friends?: string[]; // List of usernames
+  friends?: string[]; // List of UIDs
   avatarConfig?: AvatarConfig;
   settings?: AppSettings;
+  xp?: number;
+  level?: number;
+  gallery?: string[]; // New: List of video URLs for profile
+  playedHistory?: string[]; // New: List of game IDs played
+  clothingHistory?: string[]; // New: List of item IDs used
+  rank?: string; // New: Platinum, Standard, etc.
+  lastUsernameChange?: string; // New: ISO date
+  usernameChangeCards?: number; // New: Count
 }
 
 export interface MapObject {
   id: string;
   name: string;
-  type: 'Part' | 'Sphere' | 'Wedge' | 'Cylinder' | 'Model' | 'Sound' | 'Video';
+  type: 'Part' | 'Sphere' | 'Wedge' | 'Cylinder' | 'Model' | 'Sound' | 'Video' | 'Canvas' | 'Text' | 'Button' | 'Terrain' | 'Camera';
   position: [number, number, number];
   rotation: [number, number, number];
   scale: [number, number, number];
@@ -21,6 +31,7 @@ export interface MapObject {
   transparency: number;
   anchored: boolean;
   canCollide: boolean;
+  meshCollision?: boolean; // New: Use actual mesh geometry for collision
   assetUrl?: string; // For imported models, sounds, videos (Blob URL)
   volume?: number;
   loop?: boolean;
@@ -37,6 +48,13 @@ export interface MapObject {
   isBot?: boolean; // New: Is this an AI bot
   team?: 'Red' | 'Blue'; // New: Team for 4vs4
   isShooter?: boolean; // New: Flag for shooter template
+  effect?: 'none' | 'snow' | 'rain' | 'fire' | 'lights' | 'rainbow'; // New: Special effects
+  textureUrl?: string; // New: Image texture for Parts
+  terrainData?: number[][]; // New: Heightmap for terrain
+  isTerrain?: boolean; // New: Flag for terrain object
+  proximityTrigger?: boolean; // New: Play sound/video when close
+  touchTrigger?: boolean; // New: Play sound/video when touched
+  triggerDistance?: number; // New: Distance for proximity trigger
 }
 
 export interface GameVersion {
@@ -50,12 +68,25 @@ export interface Game {
   id: string;
   title: string;
   creator: string;
+  creatorUid: string;
   thumbnail: string;
-  likes: string;
+  likes: string; // Legacy percentage
+  likesCount?: number; // New: Total likes
+  stars?: number; // New: Average stars (1-5)
+  starCount?: number; // New: Total ratings
   playing: number;
   mapData?: MapObject[]; // Current map state
   skybox?: string; // Current skybox
   versions?: GameVersion[]; // History of versions
+}
+
+export interface Video {
+  id: string;
+  url: string;
+  creatorUid: string;
+  creatorName: string;
+  likes: string[]; // List of UIDs
+  createdAt: string;
 }
 
 export interface AvatarConfig {
@@ -74,6 +105,9 @@ export interface AvatarConfig {
     shirtTextureUrl: string | null;
   };
   hideFace: boolean;
+  invisible?: boolean; // New: Make avatar invisible
+  selectedAnimation?: string; // New: Selected animation from menu
+  customModelUrl?: string | null; // New: Import a full avatar replacement
 }
 
 export interface StoreItem {
@@ -93,6 +127,8 @@ export interface Server {
   players: number;
   maxPlayers: number;
   friendsInServer?: string[]; // Avatars of friends
+  status: 'online' | 'offline' | 'full';
+  region: string; // e.g., "Google Cloud", "Oracle Cloud"
 }
 
 export interface RemotePlayer {
@@ -106,6 +142,7 @@ export interface RemotePlayer {
   isJumping: boolean;
   isTalking?: boolean; // New: Voice indicator
   currentAnimation?: string; // New: Sync animations
+  selectedAnimation?: string; // New: Selected animation from menu
   targetPosition?: [number, number, number]; // For interpolation/simulation
 }
 
@@ -124,4 +161,5 @@ export enum Page {
 export interface AppSettings {
   language: 'es' | 'en';
   backgroundColor: string;
+  selectedRegion?: string;
 }

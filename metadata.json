@@ -1,5 +1,5 @@
 {
-  "name": "VoxelSphere",
+  "name": "Glidrovia",
   "description": "A real-time multiplayer 3D world with voice chat, avatar customization, and global player synchronization.",
   "requestFramePermissions": [
     "microphone"

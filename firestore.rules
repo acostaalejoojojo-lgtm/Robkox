@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.creatorUid;
+    }
+    function isAdmin() {
+      return isAuthenticated() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        request.auth.token.email == "phonkphonkswe@gmail.com"
+      );
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) || isAdmin();
+    }
+
+    // Users by Username (for login)
+    match /users_by_username/{username} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated();
+    }
+
+    // Studio Maps
+    match /studio_maps/{username} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Games Collection
+    match /games/{gameId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update: if isDocOwner() || isAdmin();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    // Videos Collection
+    match /videos/{videoId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated(); // For likes
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    // Global Settings
+    match /global_settings/{settingId} {
+      allow read: if true;
+      allow write: if isAuthenticated() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.username.lower() == "glidrovia" ||
+        isAdmin()
+      );
+    }
+  }
+}

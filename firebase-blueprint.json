@@ -1,0 +1,64 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile data",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "username": { "type": "string" },
+        "displayName": { "type": "string" },
+        "robux": { "type": "number" },
+        "drovis": { "type": "number" },
+        "friends": { "type": "array", "items": { "type": "string" } },
+        "avatarConfig": { "type": "object" },
+        "settings": { "type": "object" },
+        "gallery": { "type": "array", "items": { "type": "string" } },
+        "rank": { "type": "string" },
+        "lastUsernameChange": { "type": "string", "format": "date-time" },
+        "usernameChangeCards": { "type": "number" }
+      },
+      "required": ["uid", "username"]
+    },
+    "Game": {
+      "title": "Game",
+      "description": "Game/Experience data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "creator": { "type": "string" },
+        "creatorUid": { "type": "string" },
+        "thumbnail": { "type": "string" },
+        "likes": { "type": "string" },
+        "playing": { "type": "number" },
+        "mapData": { "type": "array" },
+        "skybox": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "creatorUid"]
+    },
+    "Video": {
+      "title": "Video",
+      "description": "Uploaded video data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "url": { "type": "string" },
+        "creatorUid": { "type": "string" },
+        "creatorName": { "type": "string" },
+        "likes": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "url", "creatorUid"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": { "schema": "User", "description": "User profiles" },
+    "/users_by_username/{username}": { "schema": "User", "description": "User profiles indexed by username" },
+    "/studio_maps/{username}": { "schema": "object", "description": "Studio map data" },
+    "/games/{gameId}": { "schema": "Game", "description": "Published games" },
+    "/videos/{videoId}": { "schema": "Video", "description": "User videos" },
+    "/global_settings/main": { "schema": "object", "description": "Global application settings" }
+  }
+}

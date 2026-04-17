@@ -1,15 +1,24 @@
 import React, { useState, useRef, useEffect, Suspense } from 'react';
-import { Canvas, useFrame, useLoader } from '@react-three/fiber';
-import { OrbitControls, TransformControls, Grid, Sky, Stars, useGLTF } from '@react-three/drei';
-import { MousePointer2, Move, Maximize, RotateCw, Box as BoxIcon, Circle as CircleIcon, Triangle as TriangleIcon, Cylinder as CylinderIcon, Save, Play, Square, Home, ArrowLeft, Upload, FileBox, Gamepad, Volume2, Video as VideoIcon, Mic, MicOff, Sun, Moon, Cloud, CloudSun, Star, Skull, Search, UserPlus, Layout } from 'lucide-react';
+import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber';
+import { OrbitControls, TransformControls, Grid, Sky, Stars, useGLTF, Environment, ContactShadows, MeshReflectorMaterial } from '@react-three/drei';
+import { MousePointer2, Move, Maximize, RotateCw, Box as BoxIcon, Circle as CircleIcon, Triangle as TriangleIcon, Cylinder as CylinderIcon, Save, Play, Square, Home, ArrowLeft, Upload, FileBox, Gamepad, Volume2, Video as VideoIcon, Mic, MicOff, Sun, Moon, Cloud, CloudSun, Star, Skull, Search, UserPlus, Layout, Send, Server as ServerIcon, Mountain } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { PositionalAudio, VideoTexture } from '@react-three/drei';
 import { AnimationMixer, LoopRepeat } from 'three';
 import * as THREE from 'three';
+import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
-import { MapObject, AvatarConfig, RemotePlayer, Server, Game } from '../types';
+import { GoogleGenAI, Type } from "@google/genai";
+import { MapObject, AvatarConfig, RemotePlayer, Server, Game, AppSettings } from '../types';
+import { auth, db, handleFirestoreError, OperationType } from '../firebase';
+import { doc, getDoc, setDoc, updateDoc, onSnapshot, collection, query, where, orderBy, getDocs } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
+import { ImportedModel } from '../components/ModelLoaders';
 import { VoxelCharacter } from '../components/AvatarScene';
 import ErrorBoundary from '../components/ErrorBoundary';
+import { dataService } from '../lib/dataService';
+import { getSupabaseClient, isSupabaseEnabled } from '../lib/supabase';
+import { GraphicsEngine } from '../components/GraphicsEngine';
 
 // --- WEBRTC MANAGER ---
 
@@ -51,12 +60,14 @@ class WebRTCManager {
     this.peers.set(targetId, pc);
 
     pc.onicecandidate = (event) => {
+      console.log("ICE candidate generated:", event.candidate);
       if (event.candidate) {
         this.socket.emit('webrtc-signal', this.roomId, targetId, { type: 'ice-candidate', candidate: event.candidate });
       }
     };
 
     pc.ontrack = (event) => {
+      console.log("Received remote track:", event);
       this.onStream(targetId, event.streams[0]);
     };
 
@@ -126,146 +137,81 @@ const SKYBOXES = {
     Cloudy: { sunPosition: [0, 50, 0], stars: false, fog: '#a0a0a0', icon: <Cloud size={16} /> }
 };
 
-const ModelGLTF = ({ url, isPlaying, selectedAnimation, onAnimationsLoaded }: { 
-  url: string; 
-  isPlaying?: boolean; 
-  selectedAnimation?: string;
-  onAnimationsLoaded?: (names: string[]) => void;
-}) => {
-  const { scene, animations } = useGLTF(url);
-  const mixer = useRef<AnimationMixer | null>(null);
-  const clone = React.useMemo(() => scene.clone(), [scene]);
-
-  useEffect(() => {
-    if (animations?.length && onAnimationsLoaded) {
-      onAnimationsLoaded(animations.map(a => a.name));
-    }
-  }, [animations, onAnimationsLoaded]);
-
-  useEffect(() => {
-    if (clone) {
-      const box = new THREE.Box3().setFromObject(clone);
-      const size = box.getSize(new THREE.Vector3());
-      const targetHeight = 3;
-      if (size.y > 0) {
-        const scale = targetHeight / size.y;
-        clone.scale.set(scale, scale, scale);
-      }
-
-      if (isPlaying && animations?.length) {
-        mixer.current = new AnimationMixer(clone);
-        const animToPlay = selectedAnimation 
-          ? animations.find(a => a.name === selectedAnimation) || animations[0]
-          : animations[0];
-        const action = mixer.current.clipAction(animToPlay);
-        action.play();
-      } else {
-        mixer.current?.stopAllAction();
-      }
-    }
-  }, [clone, isPlaying, animations, selectedAnimation]);
-
-  useFrame((state, delta) => {
-    mixer.current?.update(delta);
-  });
-
-  return <primitive object={clone} />;
-};
-
-const ModelFBX = ({ url, isPlaying, selectedAnimation, onAnimationsLoaded }: { 
-  url: string; 
-  isPlaying?: boolean; 
-  selectedAnimation?: string;
-  onAnimationsLoaded?: (names: string[]) => void;
-}) => {
-  const fbx = useLoader(FBXLoader, url);
-  const mixer = useRef<AnimationMixer | null>(null);
-  const clone = React.useMemo(() => fbx.clone(), [fbx]);
-
-  useEffect(() => {
-    if ((fbx as any)?.animations?.length && onAnimationsLoaded) {
-      onAnimationsLoaded((fbx as any).animations.map((a: any) => a.name));
-    }
-  }, [fbx, onAnimationsLoaded]);
-
-  useEffect(() => {
-    if (clone) {
-      const box = new THREE.Box3().setFromObject(clone);
-      const size = box.getSize(new THREE.Vector3());
-      const targetHeight = 3;
-      if (size.y > 0) {
-        const scale = targetHeight / size.y;
-        clone.scale.set(scale, scale, scale);
-      }
-
-      if (isPlaying && (fbx as any)?.animations?.length) {
-        mixer.current = new AnimationMixer(clone);
-        const animations = (fbx as any).animations;
-        const animToPlay = selectedAnimation 
-          ? animations.find((a: any) => a.name === selectedAnimation) || animations[0]
-          : animations[0];
-        const action = mixer.current.clipAction(animToPlay);
-        action.play();
-      } else {
-        mixer.current?.stopAllAction();
-      }
-    }
-  }, [clone, isPlaying, fbx, selectedAnimation]);
-
-  useFrame((state, delta) => {
-    mixer.current?.update(delta);
-  });
-
-  return <primitive object={clone} />;
-};
-
-const ImportedModel = ({ url, isFbx, isPlaying, selectedAnimation, onAnimationsLoaded }: { 
-  url: string; 
-  isFbx?: boolean; 
-  isPlaying?: boolean;
-  selectedAnimation?: string;
-  onAnimationsLoaded?: (names: string[]) => void;
-}) => {
-  if (!url) return null;
-  const isActuallyFbx = isFbx || url.includes('#fbx');
-  const cleanUrl = url.replace('#fbx', '');
-
-  if (isActuallyFbx) {
-    return <ModelFBX url={cleanUrl} isPlaying={isPlaying} selectedAnimation={selectedAnimation} onAnimationsLoaded={onAnimationsLoaded} />;
-  }
-  return <ModelGLTF url={cleanUrl} isPlaying={isPlaying} selectedAnimation={selectedAnimation} onAnimationsLoaded={onAnimationsLoaded} />;
-};
-
-const SoundObject = ({ url, volume = 1, loop = true, playing = true }: { url: string; volume?: number; loop?: boolean; playing?: boolean }) => {
+const SoundObject = ({ url, volume = 1, loop = true, playing = true, proximityTrigger = false, touchTrigger = false, triggerDistance = 5, position }: { url: string; volume?: number; loop?: boolean; playing?: boolean; proximityTrigger?: boolean; touchTrigger?: boolean; triggerDistance?: number; position: [number, number, number] }) => {
     if (!url) return null;
+    const [isNear, setIsNear] = useState(false);
+    const [isTouched, setIsTouched] = useState(false);
+    
+    useFrame(() => {
+        const localPos = (window as any).localPlayerPos || { x: 0, y: 0, z: 0 };
+        const dist = Math.sqrt(
+            Math.pow(position[0] - localPos.x, 2) +
+            Math.pow(position[1] - localPos.y, 2) +
+            Math.pow(position[2] - localPos.z, 2)
+        );
+
+        if (proximityTrigger) {
+            setIsNear(dist < triggerDistance);
+        }
+
+        if (touchTrigger) {
+            if (dist < 2 && !isTouched) {
+                setIsTouched(true);
+            }
+        }
+    });
+
+    const shouldPlay = touchTrigger ? isTouched : (proximityTrigger ? isNear : playing);
+
     return (
         <group>
             <mesh>
                 <sphereGeometry args={[1, 16, 16]} />
                 <meshStandardMaterial color="cyan" wireframe transparent opacity={0.3} />
             </mesh>
-            <PositionalAudio url={url} distance={20} loop={loop} autoplay={playing} />
+            <Suspense fallback={null}>
+                {shouldPlay && <PositionalAudio url={url} distance={50} loop={loop} autoplay={true} />}
+            </Suspense>
         </group>
     );
 };
 
-const VideoObject = ({ url, scale, isPlaying }: { url: string; scale: [number, number, number]; isPlaying?: boolean }) => {
+const VideoObject = ({ url, scale, isPlaying, proximityTrigger = false, touchTrigger = false, triggerDistance = 10, position }: { url: string; scale: [number, number, number]; isPlaying?: boolean; proximityTrigger?: boolean; touchTrigger?: boolean; triggerDistance?: number; position: [number, number, number] }) => {
     const [video] = useState(() => {
         if (!url) return null;
         const v = document.createElement('video');
         v.src = url;
         v.crossOrigin = "Anonymous";
         v.loop = true;
-        v.muted = !isPlaying; // Unmute when playing
-        v.play().catch(() => {});
+        v.muted = true;
         return v;
+    });
+
+    const [isNear, setIsNear] = useState(false);
+    
+    useFrame(() => {
+        if (!proximityTrigger) return;
+        const localPos = (window as any).localPlayerPos || { x: 0, y: 0, z: 0 };
+        const dist = Math.sqrt(
+            Math.pow(position[0] - localPos.x, 2) +
+            Math.pow(position[1] - localPos.y, 2) +
+            Math.pow(position[2] - localPos.z, 2)
+        );
+        setIsNear(dist < triggerDistance);
     });
 
     useEffect(() => {
         if (video) {
-            video.muted = !isPlaying;
+            const shouldPlay = proximityTrigger ? isNear : isPlaying;
+            if (shouldPlay) {
+                video.muted = false;
+                video.play().catch(() => {});
+            } else {
+                video.muted = true;
+                video.pause();
+            }
         }
-    }, [isPlaying, video]);
+    }, [isPlaying, isNear, proximityTrigger, video]);
 
     if (!video) return null;
 
@@ -279,23 +225,80 @@ const VideoObject = ({ url, scale, isPlaying }: { url: string; scale: [number, n
     );
 };
 
-const PartGeometry = ({ type }: { type: MapObject['type'] }) => {
-  switch (type) {
-    case 'Sphere': return <sphereGeometry args={[0.5, 32, 32]} />;
-    case 'Cylinder': return <cylinderGeometry args={[0.5, 0.5, 1, 32]} />;
-    case 'Wedge': return <coneGeometry args={[0.5, 1, 4]} />;
-    case 'Part': default: return <boxGeometry args={[1, 1, 1]} />;
-  }
+const Terrain = ({ data, onSculpt, isSelected }: { data: number[][], onSculpt?: (x: number, y: number) => void, isSelected?: boolean }) => {
+    const meshRef = useRef<THREE.Mesh>(null);
+    const [isSculpting, setIsSculpting] = useState(false);
+    const size = data.length;
+    const geometry = React.useMemo(() => {
+        const geo = new THREE.PlaneGeometry(size, size, size - 1, size - 1);
+        geo.rotateX(-Math.PI / 2);
+        const vertices = geo.attributes.position.array as Float32Array;
+        for (let i = 0; i < size; i++) {
+            for (let j = 0; j < size; j++) {
+                const index = (i * size + j) * 3 + 1; // Y coordinate
+                vertices[index] = data[i][j];
+            }
+        }
+        geo.computeVertexNormals();
+        return geo;
+    }, [data, size]);
+
+    const handleSculpt = (e: any) => {
+        if (onSculpt) {
+            e.stopPropagation();
+            const point = e.point;
+            const x = Math.floor(point.x + size / 2);
+            const z = Math.floor(point.z + size / 2);
+            onSculpt(x, z);
+        }
+    };
+
+    return (
+        <mesh 
+            ref={meshRef} 
+            geometry={geometry} 
+            castShadow
+            receiveShadow
+            onPointerDown={(e) => { setIsSculpting(true); handleSculpt(e); }}
+            onPointerUp={() => setIsSculpting(false)}
+            onPointerMove={(e) => { if (isSculpting) handleSculpt(e); }}
+            onPointerLeave={() => setIsSculpting(false)}
+        >
+            <meshStandardMaterial color="#4ade80" roughness={0.6} metalness={0.1} envMapIntensity={0.5} />
+        </mesh>
+    );
 };
 
-const getMaterial = (type: string, color: string) => {
-    return <meshStandardMaterial 
-        color={color}
-        roughness={type === 'Plastic' ? 0.5 : type === 'Neon' ? 0 : 0.9}
-        metalness={type === 'Plastic' ? 0 : 0.1}
-        emissive={type === 'Neon' ? color : 'black'}
-        emissiveIntensity={type === 'Neon' ? 1 : 0}
-    />;
+const MapMaterial = ({ type, color, textureUrl }: { type: string, color: string, textureUrl?: string }) => {
+    const props: any = {
+        color,
+        roughness: type === 'Plastic' ? 0.2 : type === 'Neon' ? 0 : type === 'Metal' ? 0.05 : 0.7,
+        metalness: type === 'Metal' ? 1.0 : type === 'Plastic' ? 0.05 : 0,
+        emissive: type === 'Neon' ? color : 'black',
+        emissiveIntensity: type === 'Neon' ? 8 : 0,
+    };
+
+    return (
+        <ErrorBoundary fallback={<meshStandardMaterial color={color} />}>
+            <Suspense fallback={<meshStandardMaterial color={color} />}>
+                <TextureLoaderComponent textureUrl={textureUrl} props={props} />
+            </Suspense>
+        </ErrorBoundary>
+    );
+}
+
+const TextureLoaderComponent = ({ textureUrl, props }: { textureUrl?: string, props: any }) => {
+    const { gl } = useThree();
+    if (textureUrl) {
+        const texture = useLoader(THREE.TextureLoader, textureUrl);
+        texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+        texture.anisotropy = gl.capabilities.getMaxAnisotropy();
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        props.map = texture;
+    }
+    return <meshStandardMaterial {...props} />;
 }
 
 // --- CONTROLS UI ---
@@ -303,6 +306,7 @@ const getMaterial = (type: string, color: string) => {
 const GameControls = () => {
   const touchStart = useRef({ x: 0, y: 0 });
   const [showEmotes, setShowEmotes] = useState(false);
+  const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
 
   const handleTouchStart = (e: React.TouchEvent) => {
     touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -316,11 +320,14 @@ const GameControls = () => {
     const x = Math.max(-1, Math.min(1, dx / 50));
     const y = Math.max(-1, Math.min(1, dy / -50)); // Invert Y for forward
 
+    setJoystickPos({ x: x * 40, y: -y * 40 });
+
     const event = new CustomEvent('joystickMove', { detail: { x, y } });
     window.dispatchEvent(event);
   };
 
   const handleTouchEnd = () => {
+    setJoystickPos({ x: 0, y: 0 });
     const event = new CustomEvent('joystickMove', { detail: { x: 0, y: 0 } });
     window.dispatchEvent(event);
   };
@@ -345,7 +352,10 @@ const GameControls = () => {
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
           >
-             <div className="w-12 h-12 bg-white/30 rounded-full" />
+             <div 
+                className="w-12 h-12 bg-white/30 rounded-full transition-transform duration-75" 
+                style={{ transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)` }}
+             />
           </div>
 
           {/* Emotes & Jump */}
@@ -380,13 +390,64 @@ const GameControls = () => {
   )
 };
 
-const LoadingScreen = ({ loadingStep }: { loadingStep: number }) => {
-    const messages = ["", "Iniciando motor VoxelSphere...", "Conectando al servidor...", "Cargando mapa...", "¡Listo!"];
+const LoadingScreen = ({ loadingStep, onSkip }: { loadingStep: number, onSkip?: () => void }) => {
+    const messages = [
+        "", 
+        "Iniciando motor Glidrovia...", 
+        "Conectando a Google Cloud Engine...", 
+        "Sincronizando con Oracle Cloud DB...", 
+        "¡Listo!"
+    ];
     return (
-        <div className="absolute inset-0 z-50 bg-[#1a1c1e] flex flex-col items-center justify-center">
-            <div className="w-16 h-16 bg-blue-600/20 rounded-lg animate-spin mb-8 border-4 border-t-blue-600 border-r-transparent border-b-blue-600 border-l-transparent"></div>
-            <h2 className="text-2xl font-bold text-white mb-2">VoxelSphere</h2>
-            <p className="text-gray-400">{messages[loadingStep] || "Cargando..."}</p>
+        <div className="absolute inset-0 z-50 bg-[#0a0b0d] flex flex-col items-center justify-center overflow-hidden">
+            {/* Background elements */}
+            <div className="absolute top-0 left-0 w-full h-full opacity-20 pointer-events-none">
+                <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-600 rounded-full blur-[120px] animate-pulse"></div>
+                <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-600 rounded-full blur-[120px] animate-pulse" style={{ animationDelay: '1s' }}></div>
+            </div>
+
+            <div className="relative z-10 flex flex-col items-center">
+                <div className="relative w-24 h-24 mb-12 flex items-center justify-center">
+                    <div className="absolute inset-0 border-4 border-blue-600/20 rounded-full"></div>
+                    <div className="absolute inset-0 border-4 border-t-blue-500 rounded-full animate-spin shadow-[0_0_15px_rgba(59,130,246,0.5)]"></div>
+                    <div className="w-10 h-10 bg-blue-600 rounded-lg rotate-45 flex items-center justify-center shadow-lg">
+                        <div className="w-4 h-4 bg-white rounded-sm"></div>
+                    </div>
+                </div>
+
+                <h2 className="text-5xl font-black text-white mb-4 italic tracking-tighter bg-gradient-to-r from-blue-400 via-white to-blue-600 bg-clip-text text-transparent drop-shadow-[0_0_15px_rgba(59,130,246,0.5)]">
+                    GLIDROVIA
+                </h2>
+                
+                <div className="w-64 h-1.5 bg-white/10 rounded-full overflow-hidden mb-4 border border-white/5">
+                    <div 
+                        className="h-full bg-gradient-to-r from-blue-400 to-blue-600 transition-all duration-500 ease-out shadow-[0_0_10px_rgba(59,130,246,0.8)]"
+                        style={{ width: `${(loadingStep / 4) * 100}%` }}
+                    ></div>
+                </div>
+
+                <div className="flex flex-col items-center gap-3">
+                    <div className="flex items-center gap-3">
+                        <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.8)]"></div>
+                        <p className="text-blue-400 font-mono text-xs uppercase tracking-[0.3em] font-bold">
+                            {messages[loadingStep] || "Cargando..."}
+                        </p>
+                    </div>
+                    
+                    {loadingStep > 0 && (
+                        <button 
+                            onClick={onSkip}
+                            className="mt-8 px-4 py-1 text-[10px] text-gray-500 hover:text-white border border-white/10 hover:border-white/30 rounded uppercase tracking-widest transition-all"
+                        >
+                            Saltar Carga
+                        </button>
+                    )}
+                </div>
+            </div>
+
+            <div className="absolute bottom-10 text-white/20 font-mono text-[10px] tracking-widest uppercase">
+                Glidrovia Engine v4.2.0 • Build 2026.04.12
+            </div>
         </div>
     );
 };
@@ -406,6 +467,10 @@ interface PlayerControllerProps {
     setObjects: React.Dispatch<React.SetStateAction<MapObject[]>>;
     setKills: React.Dispatch<React.SetStateAction<number>>;
     setShowKillIcon: React.Dispatch<React.SetStateAction<boolean>>;
+    globalAvatarReplacement?: any;
+    settings?: AppSettings;
+    playerName?: string;
+    supabaseChannelRef?: React.MutableRefObject<any>;
 }
 
 const PlayerController: React.FC<PlayerControllerProps> = ({ 
@@ -420,7 +485,11 @@ const PlayerController: React.FC<PlayerControllerProps> = ({
     setEquippedWeapon,
     setObjects,
     setKills,
-    setShowKillIcon
+    setShowKillIcon,
+    globalAvatarReplacement,
+    settings,
+    playerName,
+    supabaseChannelRef
 }) => {
     const [pos, setPos] = useState(new THREE.Vector3(0, 2, 0));
     const [rot, setRot] = useState(new THREE.Euler(0, 0, 0));
@@ -502,6 +571,8 @@ const PlayerController: React.FC<PlayerControllerProps> = ({
         
         if (moving) moveVec.normalize().multiplyScalar(speed);
         
+        if (isMoving !== moving) setIsMoving(moving);
+
         const rotationSpeed = 0.08;
         if (keys.current['ArrowLeft'] || keys.current['KeyA']) setRot(r => new THREE.Euler(r.x, r.y + rotationSpeed, r.z));
         if (keys.current['ArrowRight'] || keys.current['KeyD']) setRot(r => new THREE.Euler(r.x, r.y - rotationSpeed, r.z));
@@ -516,9 +587,44 @@ const PlayerController: React.FC<PlayerControllerProps> = ({
             playTriggerSound('OnJump');
         }
 
+        // 1. Apply Gravity
         velocity.current.y -= gravity;
 
-        let nextY = pos.y + velocity.current.y;
+        // 2. Collision Detection
+        const nextPosVal = pos.clone().add(velocity.current);
+        const playerBox = new THREE.Box3().setFromCenterAndSize(
+            new THREE.Vector3(nextPosVal.x, nextPosVal.y + 1, nextPosVal.z),
+            new THREE.Vector3(1, 2, 1)
+        );
+
+        let collidedY = false;
+        mapObjects.forEach(obj => {
+            if (!obj.canCollide) return;
+            
+            // Simple AABB for Parts
+            const objBox = new THREE.Box3().setFromCenterAndSize(
+                new THREE.Vector3(...obj.position),
+                new THREE.Vector3(...obj.scale)
+            );
+
+            if (playerBox.intersectsBox(objBox)) {
+                // Resolve collision
+                // If moving down and hitting top of object
+                if (velocity.current.y < 0 && pos.y >= obj.position[1] + obj.scale[1]/2 - 0.1) {
+                    velocity.current.y = 0;
+                    nextPosVal.y = obj.position[1] + obj.scale[1]/2;
+                    collidedY = true;
+                    canJump.current = true;
+                    if (isJumping) setIsJumping(false);
+                } else {
+                    // Horizontal collision - simple stop for now
+                    velocity.current.x = 0;
+                    velocity.current.z = 0;
+                }
+            }
+        });
+
+        let nextY = nextPosVal.y;
         
         // Death Logic: Fall below map
         if (nextY < -50 && !isDead.current) {
@@ -537,7 +643,7 @@ const PlayerController: React.FC<PlayerControllerProps> = ({
             nextY = 0;
             velocity.current.y = 0;
             canJump.current = true;
-            setIsJumping(false);
+            if (isJumping) setIsJumping(false);
         }
 
         // FPS Logic
@@ -585,13 +691,29 @@ const PlayerController: React.FC<PlayerControllerProps> = ({
         // Sync with server
         const roomId = activeServer?.id || 'default-room';
         const socket = (window as any).studioSocket;
-        if (socket && state.clock.getElapsedTime() % 0.1 < 0.02) {
-            socket.emit('update-player', roomId, {
-                position: [nextPos.x, nextPos.y, nextPos.z],
-                rotation: [rot.x, rot.y, rot.z],
-                isMoving: moving,
-                isJumping: !canJump.current
-            });
+        const syncData = {
+            id: socket?.id || username,
+            username: playerName || username || 'Guest',
+            position: [nextPos.x, nextPos.y, nextPos.z],
+            rotation: [rot.x, rot.y, rot.z],
+            isMoving: moving,
+            isJumping: !canJump.current,
+            config: avatarConfig
+        };
+
+        if (state.clock.getElapsedTime() % 0.1 < 0.02) {
+            if (socket) {
+                socket.emit('update-player', roomId, syncData);
+            }
+            
+            // Supabase Sync
+            if (settings?.selectedRegion === 'Supabase' && supabaseChannelRef.current) {
+                supabaseChannelRef.current.send({
+                    type: 'broadcast',
+                    event: 'player-sync',
+                    payload: syncData
+                });
+            }
         }
 
         if (currentScene === 'Lobby') {
@@ -628,6 +750,30 @@ const PlayerController: React.FC<PlayerControllerProps> = ({
     const avatarReplacement = mapObjects.find(obj => obj.isAvatarReplacement);
 
     const handleShoot = () => {
+        if ((window as any).currentBuildMode && (window as any).currentBuildMode !== 'none') {
+            // Build logic
+            const buildType = (window as any).currentBuildMode;
+            const direction = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(0, rot.y, 0));
+            const buildPos = pos.clone().add(direction.multiplyScalar(4));
+            buildPos.y = Math.floor(buildPos.y / 4) * 4 + 2; // Snap to grid vertically
+            
+            const newObj: MapObject = {
+                id: Date.now().toString(),
+                name: buildType === 'wall' ? 'Wall' : 'Ramp',
+                type: buildType === 'wall' ? 'Part' : 'Wedge',
+                position: [buildPos.x, buildPos.y, buildPos.z],
+                rotation: [0, rot.y, 0],
+                scale: buildType === 'wall' ? [4, 4, 0.5] : [4, 4, 4],
+                color: '#8B4513',
+                material: 'Wood',
+                transparency: 0,
+                anchored: true,
+                canCollide: true
+            };
+            setObjects(prev => [...prev, newObj]);
+            return;
+        }
+
         if (!equippedWeapon) return;
         playTriggerSound('OnJump'); // Placeholder for shoot sound
         
@@ -666,7 +812,16 @@ const PlayerController: React.FC<PlayerControllerProps> = ({
     return (
         <ErrorBoundary fallback={<mesh><boxGeometry args={[1,1,1]} /><meshStandardMaterial color="red" wireframe /></mesh>}>
             <Suspense fallback={null}>
-                {avatarReplacement ? (
+                    {globalAvatarReplacement?.url ? (
+                        <group position={[pos.x, pos.y, pos.z]} rotation={[rot.x, rot.y, rot.z]}>
+                            <ImportedModel 
+                                url={globalAvatarReplacement.url} 
+                                isFbx={globalAvatarReplacement.isFbx} 
+                                isPlaying={true} 
+                                targetHeight={3}
+                            />
+                        </group>
+                    ) : avatarReplacement ? (
                     <group position={[pos.x, pos.y, pos.z]} rotation={[rot.x, rot.y, rot.z]}>
                         {avatarReplacement.type === 'Model' && avatarReplacement.assetUrl ? (
                             <ImportedModel 
@@ -676,13 +831,13 @@ const PlayerController: React.FC<PlayerControllerProps> = ({
                                 selectedAnimation={currentScene === 'Lobby' ? 'Idle_Weapon' : (equippedWeapon ? 'Run_Weapon' : avatarReplacement.selectedAnimation)}
                             />
                         ) : avatarReplacement.type === 'Sound' && avatarReplacement.assetUrl ? (
-                            <SoundObject url={avatarReplacement.assetUrl} volume={avatarReplacement.volume} loop={avatarReplacement.loop} playing={true} />
+                            <SoundObject url={avatarReplacement.assetUrl} volume={avatarReplacement.volume} loop={avatarReplacement.loop} playing={true} position={[pos.x, pos.y, pos.z]} />
                         ) : avatarReplacement.type === 'Video' && avatarReplacement.assetUrl ? (
-                            <VideoObject url={avatarReplacement.assetUrl} scale={avatarReplacement.scale} isPlaying={true} />
+                            <VideoObject url={avatarReplacement.assetUrl} scale={avatarReplacement.scale} isPlaying={true} position={[pos.x, pos.y, pos.z]} />
                         ) : (
                             <group scale={avatarReplacement.scale}>
                                 <PartGeometry type={avatarReplacement.type} />
-                                {getMaterial(avatarReplacement.material, avatarReplacement.color)}
+                                <MapMaterial type={avatarReplacement.material} color={avatarReplacement.color} />
                             </group>
                         )}
                     </group>
@@ -694,7 +849,7 @@ const PlayerController: React.FC<PlayerControllerProps> = ({
                         isMoving={isMoving}
                         isJumping={isJumping}
                         weaponEquipped={!!equippedWeapon}
-                        selectedAnimation={avatarReplacement?.selectedAnimation}
+                        selectedAnimation={avatarReplacement?.selectedAnimation || avatarConfig.selectedAnimation}
                         username={username}
                     />
                 )}
@@ -706,7 +861,7 @@ const PlayerController: React.FC<PlayerControllerProps> = ({
 // --- STUDIO COMPONENT ---
 
 interface StudioProps {
-  onPublish: (gameData: { title: string, map: MapObject[], skybox: string }) => void;
+  onPublish: (gameData: { title: string, map: MapObject[], skybox: string, thumbnail?: string, maxPlayers?: number, isMultiplayer?: boolean }) => void;
   avatarConfig: AvatarConfig;
   initialMapData?: MapObject[];
   initialGame?: Game;
@@ -715,6 +870,7 @@ interface StudioProps {
   onExit?: () => void;
   playerName?: string;
   username?: string;
+  settings?: AppSettings;
 }
 
 const INITIAL_MAP: MapObject[] = [
@@ -751,311 +907,98 @@ const TEMPLATES = {
         { id: 'mtn2', name: 'Mountain South', type: 'Wedge' as const, position: [0, 25, -100] as [number, number, number], rotation: [0, Math.PI, 0] as [number, number, number], scale: [100, 50, 100] as [number, number, number], color: '#4b3621', material: 'Brick' as const, transparency: 0, anchored: true, canCollide: true },
         { id: 'mtn3', name: 'Mountain East', type: 'Wedge' as const, position: [150, 15, 0] as [number, number, number], rotation: [0, -Math.PI/2, 0] as [number, number, number], scale: [50, 30, 50] as [number, number, number], color: '#4b3621', material: 'Brick' as const, transparency: 0, anchored: true, canCollide: true },
         { id: 'mtn4', name: 'Mountain West', type: 'Wedge' as const, position: [-150, 15, 0] as [number, number, number], rotation: [0, Math.PI/2, 0] as [number, number, number], scale: [50, 30, 50] as [number, number, number], color: '#4b3621', material: 'Brick' as const, transparency: 0, anchored: true, canCollide: true },
+    ],
+    Battle_Royale: [
+        { id: 'config', name: 'GameConfig', type: 'Part' as const, position: [0, -1000, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [1, 1, 1] as [number, number, number], color: '#000000', material: 'Plastic' as const, transparency: 1, anchored: true, canCollide: false, isShooter: true },
+        { id: 'baseplate', name: 'Baseplate', type: 'Part' as const, position: [0, -0.5, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [1000, 1, 1000] as [number, number, number], color: '#1a1a1a', material: 'Plastic' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'spawn', name: 'Spawn Location', type: 'Part' as const, position: [0, 100, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [50, 1, 50] as [number, number, number], color: '#ffffff', material: 'Plastic' as const, transparency: 0.5, anchored: true, canCollide: true },
+        
+        // Buildings
+        { id: 'b1', name: 'Building 1', type: 'Part' as const, position: [50, 10, 50] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [20, 20, 20] as [number, number, number], color: '#555555', material: 'Brick' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'b2', name: 'Building 2', type: 'Part' as const, position: [-50, 15, -50] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [25, 30, 25] as [number, number, number], color: '#444444', material: 'Brick' as const, transparency: 0, anchored: true, canCollide: true },
+        
+        // Loot
+        { id: 'loot1', name: 'Loot Chest', type: 'Part' as const, position: [50, 1, 50] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [2, 2, 2] as [number, number, number], color: '#ffd700', material: 'Neon' as const, transparency: 0, anchored: false, canCollide: true, isWeapon: true, weaponType: 'Rifle' },
+        { id: 'loot2', name: 'Loot Chest', type: 'Part' as const, position: [-50, 1, -50] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [2, 2, 2] as [number, number, number], color: '#ffd700', material: 'Neon' as const, transparency: 0, anchored: false, canCollide: true, isWeapon: true, weaponType: 'Sniper' },
+        
+        // Bots
+        { id: 'bot1', name: 'Enemy Bot', type: 'Part' as const, position: [100, 1, 100] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [1, 2, 1] as [number, number, number], color: '#ff0000', material: 'Plastic' as const, transparency: 0, anchored: false, canCollide: true, isBot: true, health: 100, maxHealth: 100 },
+        { id: 'bot2', name: 'Enemy Bot', type: 'Part' as const, position: [-100, 1, -100] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [1, 2, 1] as [number, number, number], color: '#ff0000', material: 'Plastic' as const, transparency: 0, anchored: false, canCollide: true, isBot: true, health: 100, maxHealth: 100 }
+    ],
+    Obby: [
+        { id: 'baseplate', name: 'Baseplate', type: 'Part' as const, position: [0, -0.5, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [50, 1, 50] as [number, number, number], color: '#1a1a1a', material: 'Plastic' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'spawn', name: 'Spawn Location', type: 'Part' as const, position: [0, 0.1, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [6, 0.2, 6] as [number, number, number], color: '#00ff00', material: 'Plastic' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'jump1', name: 'Jump 1', type: 'Part' as const, position: [0, 0.1, 10] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [4, 0.2, 4] as [number, number, number], color: '#ff0000', material: 'Neon' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'jump2', name: 'Jump 2', type: 'Part' as const, position: [0, 0.1, 20] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [3, 0.2, 3] as [number, number, number], color: '#0000ff', material: 'Neon' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'jump3', name: 'Jump 3', type: 'Part' as const, position: [0, 0.1, 30] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [2, 0.2, 2] as [number, number, number], color: '#ffff00', material: 'Neon' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'finish', name: 'Finish Line', type: 'Part' as const, position: [0, 0.1, 40] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [6, 0.2, 6] as [number, number, number], color: '#ffffff', material: 'Neon' as const, transparency: 0, anchored: true, canCollide: true },
+    ],
+    Carreras: [
+        { id: 'baseplate', name: 'Track Base', type: 'Part' as const, position: [0, -0.5, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [200, 1, 200] as [number, number, number], color: '#111111', material: 'Plastic' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'spawn', name: 'Start Line', type: 'Part' as const, position: [0, 0.1, -80] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [20, 0.2, 5] as [number, number, number], color: '#ffffff', material: 'Neon' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'track1', name: 'Track Straight', type: 'Part' as const, position: [0, 0.1, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [20, 0.1, 160] as [number, number, number], color: '#333333', material: 'Plastic' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'wall1', name: 'Wall L', type: 'Part' as const, position: [-10, 1, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [1, 2, 160] as [number, number, number], color: '#ff0000', material: 'Neon' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'wall2', name: 'Wall R', type: 'Part' as const, position: [10, 1, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [1, 2, 160] as [number, number, number], color: '#ff0000', material: 'Neon' as const, transparency: 0, anchored: true, canCollide: true },
+    ],
+    Tycoon: [
+        { id: 'baseplate', name: 'Land', type: 'Part' as const, position: [0, -0.5, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [100, 1, 100] as [number, number, number], color: '#2d4c1e', material: 'Grass' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'spawn', name: 'Spawn', type: 'Part' as const, position: [0, 0.1, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [6, 0.2, 6] as [number, number, number], color: '#a3a2a5', material: 'Plastic' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'dropper1', name: 'Dropper 1', type: 'Part' as const, position: [10, 5, 10] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [2, 2, 2] as [number, number, number], color: '#555555', material: 'Plastic' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'conveyor', name: 'Conveyor', type: 'Part' as const, position: [10, 0.5, 20] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [3, 1, 20] as [number, number, number], color: '#222222', material: 'Plastic' as const, transparency: 0, anchored: true, canCollide: true },
+        { id: 'collector', name: 'Collector', type: 'Part' as const, position: [10, 1, 30] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: [4, 2, 4] as [number, number, number], color: '#00ff00', material: 'Neon' as const, transparency: 0, anchored: true, canCollide: true },
     ]
 };
 
-export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, initialMapData, initialGame, isPlayMode = false, activeServer, onExit, playerName, username }) => {
-  const [objects, setObjects] = useState<MapObject[]>(initialMapData || INITIAL_MAP);
-  const [currentScene, setCurrentScene] = useState<'Lobby' | 'Game'>('Game');
-  const [equippedWeapon, setEquippedWeapon] = useState<string | null>(null);
-  const [kills, setKills] = useState(0);
-  const [showKillIcon, setShowKillIcon] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [invitedUsers, setInvitedUsers] = useState<string[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [transformMode, setTransformMode] = useState<'translate' | 'rotate' | 'scale'>('translate');
-  const [isPlaying, setIsPlaying] = useState(false); 
-  const [loadingStep, setLoadingStep] = useState(0);
-  const [showPublishModal, setShowPublishModal] = useState(false);
-  const [gameTitle, setGameTitle] = useState("Mi Experiencia Voxel");
-  const [skybox, setSkybox] = useState<string>(initialGame?.skybox || 'Day');
-  const [isShooter, setIsShooter] = useState(false);
-
-  useEffect(() => {
-     setIsShooter(objects.some(obj => obj.isShooter));
-  }, [objects]);
-  
-  // Multiplayer State
-  const [remotePlayers, setRemotePlayers] = useState<RemotePlayer[]>([]);
-  const remotePlayersRef = useRef<RemotePlayer[]>([]);
-  const socketRef = useRef<Socket | null>(null);
-  const [isMicOn, setIsMicOn] = useState(false);
-  const mediaStream = useRef<MediaStream | null>(null);
-  const webrtcManager = useRef<WebRTCManager | null>(null);
-  const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
-
-  // Sync ref with state
-  useEffect(() => {
-    remotePlayersRef.current = remotePlayers;
-  }, [remotePlayers]);
-  
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const audioInputRef = useRef<HTMLInputElement>(null);
-  const videoInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-      (window as any).updateObject = (id: string, newProps: Partial<MapObject>) => {
-          setObjects(prev => prev.map(obj => obj.id === id ? { ...obj, ...newProps } : obj));
-      };
-      
-      // Connect to real-time server for both Editor and Play mode
-      const socket = io();
-      socketRef.current = socket;
-      (window as any).studioSocket = socket;
-      
-      // Determine Room ID: Use server ID if in play mode, otherwise a default or game-specific room
-      const roomId = activeServer?.id || (initialGame?.id ? `editor-${initialGame.id}` : 'global-lobby');
-      
-      console.log("Connecting to real-time room:", roomId);
-
-      socket.on('connect', () => {
-          console.log("Socket connected:", socket.id);
-          socket.emit('join-room', roomId, {
-              username: playerName || 'Guest',
-              config: avatarConfig,
-              country: ['ES', 'US', 'MX', 'AR', 'CO', 'CL', 'BR'][Math.floor(Math.random() * 7)]
-          });
-      });
-
-      socket.on('room-state', (state) => {
-          console.log("Received room state:", state);
-          const others = Object.values(state.players).filter((p: any) => p.id !== socket.id) as RemotePlayer[];
-          setRemotePlayers(others);
-          // Only update objects from server if we are in play mode (to avoid overwriting editor changes)
-          if (isPlayMode && state.mapObjects.length > 0) setObjects(state.mapObjects);
-      });
-
-      socket.on('player-joined', (player) => {
-          console.log("Player joined:", player.username);
-          setRemotePlayers(prev => {
-              if (prev.find(p => p.id === player.id)) return prev;
-              return [...prev, player];
-          });
-      });
-
-      socket.on('player-updated', (player) => {
-          setRemotePlayers(prev => prev.map(p => p.id === player.id ? player : p));
-      });
-
-      socket.on('player-left', (id) => {
-          console.log("Player left:", id);
-          setRemotePlayers(prev => prev.filter(p => p.id !== id));
-      });
-
-      socket.on('map-updated', (mapObjects) => {
-          if (isPlayMode) setObjects(mapObjects);
-      });
-
-      // Initialize WebRTC Manager
-      webrtcManager.current = new WebRTCManager(
-          socket,
-          roomId,
-          (id, stream) => {
-              setRemoteStreams(prev => ({ ...prev, [id]: stream }));
-          },
-          (id) => {
-              setRemoteStreams(prev => {
-                  const next = { ...prev };
-                  delete next[id];
-                  return next;
-              });
-          }
-      );
-
-      socket.on('webrtc-signal', (senderId, signal) => {
-          webrtcManager.current?.handleSignal(senderId, signal);
-      });
-
-      // Proximity check interval
-      const proximityInterval = setInterval(() => {
-          if (!socket.connected || !webrtcManager.current) return;
-          
-          const localPlayer = (window as any).localPlayerPos || { x: 0, y: 0, z: 0 };
-          const PROXIMITY_DISTANCE = 100; // Increased range for global feel
-
-          remotePlayersRef.current.forEach(player => {
-              const dist = Math.sqrt(
-                  Math.pow(player.position[0] - localPlayer.x, 2) +
-                  Math.pow(player.position[1] - localPlayer.y, 2) +
-                  Math.pow(player.position[2] - localPlayer.z, 2)
-              );
-
-              if (dist < PROXIMITY_DISTANCE) {
-                  if (!webrtcManager.current?.peers.has(player.id)) {
-                      webrtcManager.current?.createPeer(player.id, true);
-                  }
-              } else {
-                  if (webrtcManager.current?.peers.has(player.id)) {
-                      webrtcManager.current?.removePeer(player.id);
-                  }
-              }
-          });
-      }, 2000);
-
-      return () => {
-          console.log("Cleaning up socket connection");
-          socket.disconnect();
-          webrtcManager.current?.destroy();
-          clearInterval(proximityInterval);
-      };
-  }, [activeServer?.id, initialGame?.id, playerName, avatarConfig]); // Re-connect if identity or room changes
-
-  useEffect(() => {
-      if (isPlayMode) {
-          handlePlaySequence();
-      } else if (username) {
-          // Load saved studio map
-          fetch(`/api/user/${username}/studio`)
-              .then(res => res.json())
-              .then(data => {
-                  if (data.map && data.map.length > 0) {
-                      setObjects(data.map);
-                      setGameTitle(data.title || "Mi Experiencia Voxel");
-                      setSkybox(data.skybox || "Day");
-                  }
-              })
-              .catch(err => console.error("Error loading studio map:", err));
-      }
-  }, [isPlayMode, username]);
-
-  // Auto-save effect
-  useEffect(() => {
-      if (!isPlayMode && !isPlaying && username && objects.length > 0) {
-          const timer = setTimeout(() => {
-              fetch(`/api/user/${username}/studio`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ title: gameTitle, map: objects, skybox })
-              }).catch(err => console.error("Error auto-saving map:", err));
-          }, 5000); // Save every 5 seconds of inactivity
-          return () => clearTimeout(timer);
-      }
-  }, [objects, gameTitle, skybox, isPlayMode, isPlaying, username]);
-
-  const toggleMic = async () => {
-      if (!isMicOn) {
-          try {
-              mediaStream.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-              setIsMicOn(true);
-              webrtcManager.current?.setLocalStream(mediaStream.current);
-              
-              // Update talking status
-              const roomId = activeServer?.id || 'default-room';
-              socketRef.current?.emit('update-player', roomId, { isTalking: true });
-          } catch (err) {
-              console.error("Mic access denied", err);
-          }
-      } else {
-          mediaStream.current?.getTracks().forEach(t => t.stop());
-          setIsMicOn(false);
-          const roomId = activeServer?.id || 'default-room';
-          socketRef.current?.emit('update-player', roomId, { isTalking: false });
-      }
-  };
-
-  const handlePlaySequence = () => {
-      setLoadingStep(1);
-      const sequence = [
-          () => setLoadingStep(1),
-          () => setLoadingStep(2),
-          () => setLoadingStep(3),
-          () => { setLoadingStep(4); setTimeout(() => setIsPlaying(true), 800); }
-      ];
-      let i = 0;
-      const interval = setInterval(() => {
-          if (i < sequence.length) { sequence[i](); i++; } 
-          else { clearInterval(interval); }
-      }, 800);
-  };
-
-  const handleImportModel = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const isFbx = file.name.toLowerCase().endsWith('.fbx');
-    const url = URL.createObjectURL(file);
-    const finalUrl = isFbx ? `${url}#fbx` : url;
-
-    if (selectedId) {
-        const selectedObj = objects.find(o => o.id === selectedId);
-        if (selectedObj && (selectedObj.isBot || selectedObj.isWeapon)) {
-            handleUpdateObject(selectedId, { type: 'Model', assetUrl: finalUrl });
-            return;
-        }
+const PartGeometry = ({ type }: { type: MapObject['type'] }) => {
+    switch (type) {
+        case 'Sphere': return <sphereGeometry />;
+        case 'Cylinder': return <cylinderGeometry />;
+        case 'Wedge': return <boxGeometry />; // Simple wedge approximation
+        case 'Canvas': return <planeGeometry />;
+        default: return <boxGeometry />;
     }
+};
 
-    const newObj: MapObject = {
-        id: Date.now().toString(),
-        name: file.name,
-        type: 'Model',
-        position: [0, 2, 0],
-        rotation: [0, 0, 0],
-        scale: [1, 1, 1],
-        color: '#ffffff',
-        material: 'Plastic',
-        transparency: 0,
-        anchored: false,
-        canCollide: true,
-        assetUrl: isFbx ? url + '#fbx' : url,
-    };
-    setObjects([...objects, newObj]);
-    setSelectedId(newObj.id);
-  };
+const CameraHelper = ({ isSelected }: { isSelected: boolean }) => (
+    <group>
+        <mesh>
+            <boxGeometry args={[0.5, 0.4, 0.6]} />
+            <meshStandardMaterial color={isSelected ? "#00a2ff" : "#444"} />
+        </mesh>
+        <mesh position={[0, 0, 0.35]} rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.15, 0.15, 0.2, 8]} />
+            <meshStandardMaterial color={isSelected ? "#00c3ff" : "#222"} />
+        </mesh>
+        {/* View Direction indicator */}
+        <mesh position={[0, 0, 0.8]} rotation={[Math.PI / 2, 0, 0]}>
+            <coneGeometry args={[0.1, 0.3, 4]} />
+            <meshStandardMaterial color="#ffcc00" />
+        </mesh>
+    </group>
+);
 
-  const handleImportAudio = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    const newObj: MapObject = {
-        id: Date.now().toString(),
-        name: file.name,
-        type: 'Sound',
-        position: [0, 2, 0],
-        rotation: [0, 0, 0],
-        scale: [1, 1, 1],
-        color: '#00ffff',
-        material: 'Plastic',
-        transparency: 0,
-        anchored: true,
-        canCollide: false,
-        assetUrl: url,
-        volume: 1,
-        loop: true,
-        playing: true
-    };
-    setObjects([...objects, newObj]);
-    setSelectedId(newObj.id);
-  };
+const CinematicCamera = ({ objects, index, isPlaying }: { objects: MapObject[], index: number | null, isPlaying: boolean }) => {
+    const cameras = objects.filter(o => o.type === 'Camera');
 
-  const handleImportVideo = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    const newObj: MapObject = {
-        id: Date.now().toString(),
-        name: file.name,
-        type: 'Video',
-        position: [0, 5, 0],
-        rotation: [0, 0, 0],
-        scale: [10, 6, 1],
-        color: '#ffffff',
-        material: 'Plastic',
-        transparency: 0,
-        anchored: true,
-        canCollide: true,
-        assetUrl: url
-    };
-    setObjects([...objects, newObj]);
-    setSelectedId(newObj.id);
-  };
+    useFrame((state) => {
+        if (!isPlaying || index === null || cameras.length === 0) return;
+        
+        const targetCam = cameras[index % cameras.length];
+        if (!targetCam) return;
+        
+        const pos = new THREE.Vector3(...targetCam.position);
+        const rot = new THREE.Euler(...targetCam.rotation);
+        
+        state.camera.position.lerp(pos, 0.1);
+        state.camera.quaternion.slerp(new THREE.Quaternion().setFromEuler(rot), 0.1);
+    });
+    
+    return null;
+};
 
-  const handleUpdateObject = (id: string, newProps: Partial<MapObject>) => {
-    setObjects(prev => prev.map(obj => obj.id === id ? { ...obj, ...newProps } : obj));
-  };
-
-  const RenderMap = () => (
+const MapRenderer = ({ objects, isPlaying, selectedId, transformMode, handleUpdateObject, setSelectedId, sculptMode }: any) => (
       <>
-        {objects.filter(obj => !(isPlaying && obj.isAvatarReplacement)).map((obj) => (
+        {objects.filter((obj: any) => !(isPlaying && obj.isAvatarReplacement)).map((obj: any) => (
             <React.Fragment key={obj.id}>
                 {/* Bot Health Bar Overlay */}
                 {isPlaying && obj.isBot && obj.health && obj.health > 0 && (
@@ -1126,13 +1069,42 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
                                 username={obj.name}
                             />
                         ) : obj.type === 'Sound' && obj.assetUrl ? (
-                            <SoundObject url={obj.assetUrl} volume={obj.volume} loop={obj.loop} playing={isPlaying} />
+                            <ErrorBoundary fallback={<mesh><sphereGeometry args={[0.5, 8, 8]} /><meshStandardMaterial color="red" wireframe /></mesh>}>
+                                <SoundObject url={obj.assetUrl} volume={obj.volume} loop={obj.loop} playing={isPlaying} proximityTrigger={obj.proximityTrigger} triggerDistance={obj.triggerDistance} position={obj.position} />
+                            </ErrorBoundary>
                         ) : obj.type === 'Video' && obj.assetUrl ? (
-                            <VideoObject url={obj.assetUrl} scale={obj.scale} isPlaying={isPlaying} />
+                            <ErrorBoundary fallback={<mesh><planeGeometry args={[1, 1]} /><meshStandardMaterial color="red" wireframe /></mesh>}>
+                                <VideoObject url={obj.assetUrl} scale={obj.scale} isPlaying={isPlaying} proximityTrigger={obj.proximityTrigger} triggerDistance={obj.triggerDistance} position={obj.position} />
+                            </ErrorBoundary>
+                        ) : obj.type === 'Terrain' && obj.terrainData ? (
+                            <Terrain 
+                                data={obj.terrainData} 
+                                isSelected={selectedId === obj.id}
+                                onSculpt={(x, z) => {
+                                    if (sculptMode && selectedId === obj.id) {
+                                        const newData = [...obj.terrainData!];
+                                        // Sculpt a mountain
+                                        for (let i = -4; i <= 4; i++) {
+                                            for (let j = -4; j <= 4; j++) {
+                                                const nx = x + i;
+                                                const nz = z + j;
+                                                if (nx >= 0 && nx < newData.length && nz >= 0 && nz < newData.length) {
+                                                    const dist = Math.sqrt(i*i + j*j);
+                                                    // Higher peak in the middle, wider base
+                                                    newData[nx][nz] += Math.max(0, 4 - dist) * 0.5;
+                                                }
+                                            }
+                                        }
+                                        handleUpdateObject(obj.id, { terrainData: newData });
+                                    }
+                                }}
+                            />
+                        ) : obj.type === 'Camera' ? (
+                            <CameraHelper isSelected={selectedId === obj.id} />
                         ) : (
                             <>
                                 <PartGeometry type={obj.type} />
-                                {getMaterial(obj.material, obj.color)}
+                                <MapMaterial type={obj.material} color={obj.color} textureUrl={obj.textureUrl} />
                             </>
                         )}
                     </mesh>
@@ -1150,49 +1122,55 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
                     }}
                 >
                     {obj.type === 'Model' && obj.assetUrl ? (
-                            <ErrorBoundary fallback={<mesh><boxGeometry args={[1,1,1]} /><meshStandardMaterial color="red" wireframe /></mesh>}>
-                                <Suspense fallback={<mesh><boxGeometry args={[1,1,1]} /><meshStandardMaterial color="gray" wireframe /></mesh>}>
-                                    <ImportedModel 
-                                        url={obj.assetUrl.replace('#fbx','')} 
-                                        isFbx={obj.assetUrl.includes('#fbx')} 
-                                        isPlaying={isPlaying} 
-                                        selectedAnimation={obj.selectedAnimation}
-                                        onAnimationsLoaded={(names) => {
-                                            if (!obj.availableAnimations || obj.availableAnimations.length !== names.length) {
-                                                handleUpdateObject(obj.id, { availableAnimations: names });
-                                            }
-                                        }}
-                                    />
-                                </Suspense>
-                            </ErrorBoundary>
-                        ) : obj.isBot ? (
-                            <VoxelCharacter 
-                                config={{
-                                    bodyColors: {
-                                        head: obj.color, torso: obj.color, leftArm: obj.color,
-                                        rightArm: obj.color, leftLeg: obj.color, rightLeg: obj.color
-                                    },
-                                    faceTextureUrl: null,
-                                    accessories: { hatModelUrl: null, shirtTextureUrl: null },
-                                    hideFace: false
-                                }}
-                                position={[0, -1, 0]}
-                                rotation={[0, 0, 0]}
-                                isMoving={isPlaying}
-                                weaponEquipped={true}
-                                selectedAnimation={obj.selectedAnimation}
-                                username={obj.name}
-                            />
-                        ) : obj.type === 'Sound' && obj.assetUrl ? (
-                            <SoundObject url={obj.assetUrl} volume={obj.volume} loop={obj.loop} playing={isPlaying} />
-                        ) : obj.type === 'Video' && obj.assetUrl ? (
-                            <VideoObject url={obj.assetUrl} scale={obj.scale} isPlaying={isPlaying} />
-                        ) : (
-                            <>
-                                <PartGeometry type={obj.type} />
-                                {getMaterial(obj.material, obj.color)}
-                            </>
-                        )}
+                        <ErrorBoundary fallback={<mesh><boxGeometry args={[1,1,1]} /><meshStandardMaterial color="red" wireframe /></mesh>}>
+                            <Suspense fallback={<mesh><boxGeometry args={[1,1,1]} /><meshStandardMaterial color="gray" wireframe /></mesh>}>
+                                <ImportedModel 
+                                    url={obj.assetUrl.replace('#fbx','')} 
+                                    isFbx={obj.assetUrl.includes('#fbx')} 
+                                    isPlaying={isPlaying} 
+                                    selectedAnimation={obj.selectedAnimation}
+                                    onAnimationsLoaded={(names) => {
+                                        if (!obj.availableAnimations || obj.availableAnimations.length !== names.length) {
+                                            handleUpdateObject(obj.id, { availableAnimations: names });
+                                        }
+                                    }}
+                                />
+                            </Suspense>
+                        </ErrorBoundary>
+                    ) : obj.isBot ? (
+                        <VoxelCharacter 
+                            config={{
+                                bodyColors: {
+                                    head: obj.color, torso: obj.color, leftArm: obj.color,
+                                    rightArm: obj.color, leftLeg: obj.color, rightLeg: obj.color
+                                },
+                                faceTextureUrl: null,
+                                accessories: { hatModelUrl: null, shirtTextureUrl: null },
+                                hideFace: false
+                            }}
+                            position={[0, -1, 0]}
+                            rotation={[0, 0, 0]}
+                            isMoving={isPlaying}
+                            weaponEquipped={true}
+                            selectedAnimation={obj.selectedAnimation}
+                            username={obj.name}
+                        />
+                    ) : obj.type === 'Sound' && obj.assetUrl ? (
+                        <ErrorBoundary fallback={<mesh><sphereGeometry args={[0.5, 8, 8]} /><meshStandardMaterial color="red" wireframe /></mesh>}>
+                            <SoundObject url={obj.assetUrl} volume={obj.volume} loop={obj.loop} playing={isPlaying} proximityTrigger={obj.proximityTrigger} triggerDistance={obj.triggerDistance} position={obj.position} />
+                        </ErrorBoundary>
+                    ) : obj.type === 'Video' && obj.assetUrl ? (
+                        <ErrorBoundary fallback={<mesh><planeGeometry args={[1, 1]} /><meshStandardMaterial color="red" wireframe /></mesh>}>
+                            <VideoObject url={obj.assetUrl} scale={obj.scale} isPlaying={isPlaying} proximityTrigger={obj.proximityTrigger} triggerDistance={obj.triggerDistance} position={obj.position} />
+                        </ErrorBoundary>
+                    ) : obj.type === 'Camera' ? (
+                        isPlaying ? null : <CameraHelper isSelected={selectedId === obj.id} />
+                    ) : (
+                        <>
+                            <PartGeometry type={obj.type} />
+                            <MapMaterial type={obj.material} color={obj.color} textureUrl={obj.textureUrl} />
+                        </>
+                    )}
                 </mesh>
                 )}
             </React.Fragment>
@@ -1200,9 +1178,764 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
       </>
   );
 
+const RemotePlayerRenderer = ({ player, stream, globalAvatarReplacement }: { player: RemotePlayer, stream?: MediaStream, globalAvatarReplacement?: any }) => {
+      const [currentPos] = useState(() => new THREE.Vector3(...player.position));
+      const [currentRot] = useState(() => new THREE.Euler(...player.rotation));
+      const audioRef = useRef<HTMLAudioElement | null>(null);
+      
+      useEffect(() => {
+          if (stream && !audioRef.current) {
+              const audio = new Audio();
+              audio.srcObject = stream;
+              audio.play().catch(e => console.error("Error playing remote stream", e));
+              audioRef.current = audio;
+          }
+          return () => {
+              if (audioRef.current) {
+                  audioRef.current.pause();
+                  audioRef.current.srcObject = null;
+                  audioRef.current = null;
+              }
+          };
+      }, [stream]);
+
+      useFrame((state, delta) => {
+          // If we have a target (future) position, lerp towards it
+          if (player.targetPosition && player.isMoving) {
+               const target = new THREE.Vector3(...player.targetPosition);
+               currentPos.lerp(target, delta * 5); // Faster lerp for responsiveness
+               
+               if (currentPos.distanceTo(target) > 0.1) {
+                   const angle = Math.atan2(target.x - currentPos.x, target.z - currentPos.z);
+                   currentRot.y = angle + Math.PI;
+               }
+          } else {
+              // Otherwise, snap/lerp to the current known position
+              const target = new THREE.Vector3(...player.position);
+              currentPos.lerp(target, 0.2); // Smooth snap
+              currentRot.y = THREE.MathUtils.lerp(currentRot.y, player.rotation[1], 0.2);
+          }
+      });
+
+      return (
+          <group>
+              <ErrorBoundary fallback={null}>
+                  <Suspense fallback={null}>
+                    {globalAvatarReplacement?.url ? (
+                        <group position={[currentPos.x, currentPos.y, currentPos.z]} rotation={[0, currentRot.y, 0]}>
+                            <ImportedModel 
+                                url={globalAvatarReplacement.url} 
+                                isFbx={globalAvatarReplacement.isFbx} 
+                                isPlaying={true} 
+                                targetHeight={3}
+                            />
+                        </group>
+                    ) : (
+                        <VoxelCharacter 
+                           config={player.config} 
+                           position={[currentPos.x, currentPos.y, currentPos.z]} 
+                           rotation={[0, currentRot.y, 0]}
+                           isMoving={player.isMoving}
+                           isJumping={player.isJumping}
+                           selectedAnimation={player.selectedAnimation}
+                           username={`${player.username} [${player.country || '??'}]`}
+                        />
+                    )}
+                  </Suspense>
+              </ErrorBoundary>
+              {player.isTalking && (
+                  <mesh position={[currentPos.x, currentPos.y + 3.5, currentPos.z]}>
+                      <sphereGeometry args={[0.1, 16, 16]} />
+                      <meshStandardMaterial color="#00ff00" emissive="#00ff00" emissiveIntensity={2} />
+                  </mesh>
+              )}
+          </group>
+      );
+  }
+
+const SpecialEffects = ({ objects }: { objects: MapObject[] }) => {
+    // Check if any object has an effect
+    const activeEffects = objects.map(o => o.effect).filter(e => e && e !== 'none');
+    const isTeatro = objects.some(o => o.name === 'Stage' && o.material === 'Wood');
+    
+    return (
+        <>
+            {isTeatro && (
+                <div className="absolute inset-0 pointer-events-none z-50 bg-black animate-[fadeOut_3s_ease-in-out_forwards]" />
+            )}
+            <style>{`
+                @keyframes fadeOut {
+                    0% { opacity: 1; }
+                    50% { opacity: 0.8; }
+                    100% { opacity: 0; visibility: hidden; }
+                }
+            `}</style>
+            {activeEffects.includes('snow') && (
+                <div className="absolute inset-0 pointer-events-none z-30 flex justify-center overflow-hidden">
+                    {/* Fake snow effect using CSS */}
+                    {Array.from({ length: 50 }).map((_, i) => (
+                        <div key={i} className="absolute bg-white rounded-full opacity-80" 
+                             style={{
+                                 width: Math.random() * 5 + 2 + 'px',
+                                 height: Math.random() * 5 + 2 + 'px',
+                                 left: Math.random() * 100 + '%',
+                                 top: -10,
+                                 animation: `fall ${Math.random() * 3 + 2}s linear infinite`,
+                                 animationDelay: `${Math.random() * 5}s`
+                             }} 
+                        />
+                    ))}
+                    <style>{`
+                        @keyframes fall {
+                            to { transform: translateY(100vh); }
+                        }
+                    `}</style>
+                </div>
+            )}
+            {activeEffects.includes('rain') && (
+                <div className="absolute inset-0 pointer-events-none z-30 flex justify-center overflow-hidden">
+                    {/* Fake rain effect using CSS */}
+                    {Array.from({ length: 100 }).map((_, i) => (
+                        <div key={i} className="absolute bg-blue-400 opacity-40" 
+                             style={{
+                                 width: '1px',
+                                 height: Math.random() * 15 + 10 + 'px',
+                                 left: Math.random() * 100 + '%',
+                                 top: -20,
+                                 animation: `rainFall ${Math.random() * 0.5 + 0.5}s linear infinite`,
+                                 animationDelay: `${Math.random() * 2}s`
+                             }} 
+                        />
+                    ))}
+                    <style>{`
+                        @keyframes rainFall {
+                            to { transform: translateY(100vh); }
+                        }
+                    `}</style>
+                </div>
+            )}
+            {activeEffects.includes('fire') && (
+                <div className="absolute bottom-0 left-0 w-full h-32 pointer-events-none z-30 bg-gradient-to-t from-orange-600/50 to-transparent animate-pulse mix-blend-screen" />
+            )}
+            {activeEffects.includes('lights') && (
+                <div className="absolute top-0 left-0 w-full h-full pointer-events-none z-30 flex justify-around mix-blend-screen opacity-30">
+                    <div className="w-1/3 h-full bg-gradient-to-b from-blue-500 to-transparent animate-pulse" style={{ animationDuration: '2s' }} />
+                    <div className="w-1/3 h-full bg-gradient-to-b from-red-500 to-transparent animate-pulse" style={{ animationDuration: '1.5s' }} />
+                    <div className="w-1/3 h-full bg-gradient-to-b from-green-500 to-transparent animate-pulse" style={{ animationDuration: '2.5s' }} />
+                </div>
+            )}
+            {activeEffects.includes('rainbow') && (
+                <div className="absolute inset-0 pointer-events-none z-30 bg-gradient-to-r from-red-500 via-yellow-500 via-green-500 via-blue-500 to-purple-500 opacity-20 mix-blend-overlay animate-pulse" style={{ animationDuration: '5s' }} />
+            )}
+        </>
+    );
+};
+
+export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, initialMapData, initialGame, isPlayMode = false, activeServer, onExit, playerName, username, settings }) => {
+    const [globalAvatarReplacement, setGlobalAvatarReplacement] = useState<{ url: string; isFbx: boolean } | null>(null);
+    const [objects, setObjects] = useState<MapObject[]>(initialMapData || INITIAL_MAP);
+    const [activeCinematicIndex, setActiveCinematicIndex] = useState<number | null>(null);
+    const [currentScene, setCurrentScene] = useState<'Lobby' | 'Game'>('Game');
+    const supabaseChannelRef = useRef<any>(null);
+    const roomId = activeServer?.id || (initialGame?.id ? `editor-${initialGame.id}` : 'global-lobby');
+
+    useEffect(() => {
+        if (settings?.selectedRegion === 'Supabase' && isSupabaseEnabled()) {
+            const client = getSupabaseClient();
+            if (client) {
+                console.log("Initializing Supabase Realtime Multiplayer for room:", roomId);
+                const channel = client.channel(`mp:${roomId}`, {
+                    config: {
+                        broadcast: { self: false },
+                        presence: { key: username || 'guest' }
+                    }
+                });
+
+                channel
+                    .on('broadcast', { event: 'player-sync' }, ({ payload }) => {
+                        setRemotePlayers(prev => {
+                            const existing = prev.find(p => p.id === payload.id);
+                            if (existing) {
+                                return prev.map(p => p.id === payload.id ? { ...p, ...payload } : p);
+                            }
+                            return [...prev, payload];
+                        });
+                    })
+                    .on('presence', { event: 'sync' }, () => {
+                        const state = channel.presenceState();
+                        console.log('Presence sync:', state);
+                    })
+                    .on('presence', { event: 'leave' }, ({ leftPresences }) => {
+                        leftPresences.forEach((p: any) => {
+                            setRemotePlayers(prev => prev.filter(pl => pl.username !== p.key));
+                        });
+                    })
+                    .subscribe((status) => {
+                        if (status === 'SUBSCRIBED') {
+                            channel.track({ online_at: new Date().toISOString() });
+                        }
+                    });
+
+                supabaseChannelRef.current = channel;
+                return () => {
+                    client.removeChannel(channel);
+                };
+            }
+        }
+    }, [settings?.selectedRegion, roomId, username]);
+
+    useEffect(() => {
+        const unsubscribeGlobal = dataService.subscribeToGlobalSettings((data) => {
+            if (data.global_avatar_replacement) {
+                setGlobalAvatarReplacement(data.global_avatar_replacement);
+            } else {
+                setGlobalAvatarReplacement(null);
+            }
+        });
+        return () => unsubscribeGlobal();
+    }, []);
+
+    const [equippedWeapon, setEquippedWeapon] = useState<string | null>(null);
+  const [buildMode, setBuildMode] = useState<'none' | 'wall' | 'ramp'>('none');
+  const [kills, setKills] = useState(0);
+  const [showKillIcon, setShowKillIcon] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [invitedUsers, setInvitedUsers] = useState<string[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [transformMode, setTransformMode] = useState<'translate' | 'rotate' | 'scale'>('translate');
+  const [isPlaying, setIsPlaying] = useState(false); 
+  const [loadingStep, setLoadingStep] = useState(0);
+  const [showPublishModal, setShowPublishModal] = useState(false);
+  const [showStudioMenu, setShowStudioMenu] = useState(false);
+  const [gameTitle, setGameTitle] = useState("Mi Experiencia Glidrovia");
+  const [isMultiplayer, setIsMultiplayer] = useState(true);
+  const [maxPlayers, setMaxPlayers] = useState(20);
+  const [isMicOn, setIsMicOn] = useState(false);
+  const [sculptMode, setSculptMode] = useState(false);
+  const [showTextureSphere, setShowTextureSphere] = useState(false);
+
+  const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
+  const [isPublishing, setIsPublishing] = useState(false);
+
+  const handleCreateObject = (type: MapObject['type']) => {
+    const id = Math.random().toString(36).substr(2, 9);
+    const newObj: MapObject = {
+      id,
+      name: type + ' ' + id.substr(0, 4),
+      type,
+      position: [0, 5, 0],
+      rotation: [0, 0, 0],
+      scale: type === 'Terrain' ? [1, 1, 1] : [4, 4, 4], // Default scale larger as requested
+      color: '#ffffff',
+      material: 'Plastic',
+      transparency: 0,
+      anchored: true,
+      canCollide: true,
+      isTerrain: type === 'Terrain',
+      terrainData: type === 'Terrain' ? Array(50).fill(0).map(() => Array(50).fill(0)) : undefined
+    };
+    setObjects([...objects, newObj]);
+    setSelectedId(id);
+  };
+
+  const generateAITemplate = async (type: 'BattleRoyale' | 'Obby' | 'City') => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+        console.error("GEMINI_API_KEY is not defined");
+        return;
+    }
+    setLoadingStep(1);
+    
+    try {
+        const ai = new GoogleGenAI({ apiKey });
+        const response = await ai.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: `Genera una lista de objetos JSON para un mapa de ${type} en un clon de Roblox llamado Glidrovia. 
+            Usa el formato: Array<{ id: string, name: string, type: 'Part' | 'Sphere' | 'Wedge' | 'Cylinder', position: [number, number, number], rotation: [number, number, number], scale: [number, number, number], color: string, material: 'Plastic' | 'Neon' | 'Grass' | 'Wood' | 'Brick' | 'Fabric', anchored: boolean, canCollide: boolean, isWeapon?: boolean, weaponType?: string, isBot?: boolean, health?: number }>.
+            Genera al menos 20 objetos interesantes. El suelo (Baseplate) ya existe.`,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            id: { type: Type.STRING },
+                            name: { type: Type.STRING },
+                            type: { type: Type.STRING, enum: ['Part', 'Sphere', 'Wedge', 'Cylinder'] },
+                            position: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+                            rotation: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+                            scale: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+                            color: { type: Type.STRING },
+                            material: { type: Type.STRING, enum: ['Plastic', 'Neon', 'Grass', 'Wood', 'Brick', 'Fabric'] },
+                            anchored: { type: Type.BOOLEAN },
+                            canCollide: { type: Type.BOOLEAN },
+                            isWeapon: { type: Type.BOOLEAN },
+                            weaponType: { type: Type.STRING },
+                            isBot: { type: Type.BOOLEAN },
+                            health: { type: Type.NUMBER }
+                        },
+                        required: ['id', 'name', 'type', 'position', 'rotation', 'scale', 'color', 'material', 'anchored', 'canCollide']
+                    }
+                }
+            }
+        });
+
+        const newObjects = JSON.parse(response.text);
+        const sanitizedObjects = newObjects.map((obj: any) => ({
+            ...obj,
+            id: 'ai_' + Math.random().toString(36).substr(2, 9)
+        }));
+        setObjects(prev => [...prev, ...sanitizedObjects]);
+        alert(`¡Plantilla de ${type} generada con éxito!`);
+    } catch (err) {
+        console.error("Error generating AI template:", err);
+        alert("Error al generar la plantilla con IA. Asegúrate de que la API Key esté configurada.");
+    } finally {
+        setLoadingStep(0);
+    }
+  };
+  const [skybox, setSkybox] = useState<string>(initialGame?.skybox || 'Day');
+  const [isShooter, setIsShooter] = useState(false);
+
+  useEffect(() => {
+     setIsShooter(objects.some(obj => obj.isShooter));
+  }, [objects]);
+  
+  // Multiplayer State
+  const [remotePlayers, setRemotePlayers] = useState<RemotePlayer[]>([]);
+  const remotePlayersRef = useRef<RemotePlayer[]>([]);
+  const socketRef = useRef<Socket | null>(null);
+  const mediaStream = useRef<MediaStream | null>(null);
+  const webrtcManager = useRef<WebRTCManager | null>(null);
+  const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
+
+  // Sync ref with state
+  useEffect(() => {
+    remotePlayersRef.current = remotePlayers;
+  }, [remotePlayers]);
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const mapInputRef = useRef<HTMLInputElement>(null);
+  const [myPublishedGames, setMyPublishedGames] = useState<Game[]>([]);
+  const [showImportServerModal, setShowImportServerModal] = useState(false);
+
+  useEffect(() => {
+      (window as any).updateObject = (id: string, newProps: Partial<MapObject>) => {
+          setObjects(prev => prev.map(obj => obj.id === id ? { ...obj, ...newProps } : obj));
+      };
+      
+      // Connect to real-time server for both Editor and Play mode
+      const socket = io();
+      socketRef.current = socket;
+      (window as any).studioSocket = socket;
+      
+      // Determine Room ID: Use server ID if in play mode, otherwise a default or game-specific room
+      const roomId = activeServer?.id || (initialGame?.id ? `editor-${initialGame.id}` : 'global-lobby');
+      
+      console.log("Connecting to real-time room:", roomId);
+
+      socket.on('connect', () => {
+          console.log("Socket connected:", socket.id);
+          socket.emit('join-room', roomId, {
+              username: playerName || 'Guest',
+              config: avatarConfig,
+              country: ['ES', 'US', 'MX', 'AR', 'CO', 'CL', 'BR'][Math.floor(Math.random() * 7)]
+          });
+      });
+
+      socket.on('room-state', (state) => {
+          console.log("Received room state:", state);
+          const others = Object.values(state.players).filter((p: any) => p.id !== socket.id) as RemotePlayer[];
+          setRemotePlayers(others);
+          // Only update objects from server if we are in play mode (to avoid overwriting editor changes)
+          if (isPlayMode && state.mapObjects.length > 0) setObjects(state.mapObjects);
+      });
+
+      socket.on('player-joined', (player) => {
+          console.log("Player joined:", player.username);
+          setRemotePlayers(prev => {
+              if (prev.find(p => p.id === player.id)) return prev;
+              return [...prev, player];
+          });
+      });
+
+      socket.on('player-updated', (player) => {
+          setRemotePlayers(prev => prev.map(p => p.id === player.id ? player : p));
+      });
+
+      socket.on('player-left', (id) => {
+          console.log("Player left:", id);
+          setRemotePlayers(prev => prev.filter(p => p.id !== id));
+      });
+
+      socket.on('map-updated', (mapObjects) => {
+          if (isPlayMode) setObjects(mapObjects);
+      });
+
+
+
+      // Initialize WebRTC Manager
+      webrtcManager.current = new WebRTCManager(
+          socket,
+          roomId,
+          (id, stream) => {
+              setRemoteStreams(prev => ({ ...prev, [id]: stream }));
+          },
+          (id) => {
+              setRemoteStreams(prev => {
+                  const next = { ...prev };
+                  delete next[id];
+                  return next;
+              });
+          }
+      );
+
+      socket.on('webrtc-signal', (senderId, signal) => {
+          webrtcManager.current?.handleSignal(senderId, signal);
+      });
+
+      // Proximity check interval
+      const proximityInterval = setInterval(() => {
+          if (!socket.connected || !webrtcManager.current) return;
+          
+          const localPlayer = (window as any).localPlayerPos || { x: 0, y: 0, z: 0 };
+          const PROXIMITY_DISTANCE = 100; // Increased range for global feel
+
+          remotePlayersRef.current.forEach(player => {
+              const dist = Math.sqrt(
+                  Math.pow(player.position[0] - localPlayer.x, 2) +
+                  Math.pow(player.position[1] - localPlayer.y, 2) +
+                  Math.pow(player.position[2] - localPlayer.z, 2)
+              );
+
+              if (dist < PROXIMITY_DISTANCE) {
+                  if (!webrtcManager.current?.peers.has(player.id)) {
+                      webrtcManager.current?.createPeer(player.id, true);
+                  }
+              } else {
+                  if (webrtcManager.current?.peers.has(player.id)) {
+                      webrtcManager.current?.removePeer(player.id);
+                  }
+              }
+          });
+      }, 2000);
+
+      return () => {
+          console.log("Cleaning up socket connection");
+          socket.disconnect();
+          webrtcManager.current?.destroy();
+          clearInterval(proximityInterval);
+      };
+  }, [activeServer?.id, initialGame?.id, playerName, avatarConfig]); // Re-connect if identity or room changes
+
+  useEffect(() => {
+      if (isPlayMode) {
+          handlePlaySequence();
+      } else if (username) {
+          // Load saved studio map from Firestore
+          const loadStudioMap = async () => {
+              try {
+                  const data = await dataService.getStudioData(username);
+                  if (data && data.mapData && data.mapData.length > 0) {
+                      setObjects(data.mapData);
+                      setGameTitle(data.title || "Mi Experiencia Voxel");
+                      setSkybox(data.skybox || "Day");
+                  }
+              } catch (err) {
+                  console.error("Error loading studio map:", err);
+              }
+          };
+          loadStudioMap();
+      }
+  }, [isPlayMode, username]);
+
+  // Auto-save effect
+  useEffect(() => {
+      if (!isPlayMode && !isPlaying && username && objects.length > 0) {
+          const autoSave = async () => {
+              try {
+                  await dataService.saveStudioData(username, objects);
+              } catch (err) {
+                  console.error("Error auto-saving:", err);
+              }
+          };
+
+          const timer = setTimeout(autoSave, 5000); // Save every 5 seconds of inactivity
+          return () => clearTimeout(timer);
+      }
+  }, [objects, gameTitle, skybox, isPlayMode, isPlaying, username]);
+
+  const handlePlaySequence = () => {
+    setLoadingStep(1);
+    const sequence = [
+      () => setLoadingStep(1),
+      () => setLoadingStep(2),
+      () => setLoadingStep(3),
+      () => { 
+        setLoadingStep(4); 
+        setTimeout(() => {
+          setIsPlaying(true);
+          setLoadingStep(0);
+        }, 800); 
+      }
+    ];
+    let i = 0;
+    const interval = setInterval(() => {
+      if (i < sequence.length) { 
+        sequence[i](); 
+        i++; 
+      } else { 
+        clearInterval(interval); 
+      }
+    }, 800);
+
+    // Safety timeout: if it hangs for more than 10 seconds, force start
+    setTimeout(() => {
+      if (loadingStep > 0 && !isPlaying) {
+        console.warn("Loading sequence timed out, forcing play mode.");
+        setIsPlaying(true);
+        setLoadingStep(0);
+      }
+    }, 10000);
+  };
+
+  const handleImportModel = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const isFbx = file.name.toLowerCase().endsWith('.fbx');
+    
+    // Fallback/Local mode: Use FileReader to get a Data URL immediately
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+        const localUrl = event.target?.result as string;
+        
+        // Try to upload to server for persistence
+        let finalUrl = localUrl;
+        
+        try {
+            finalUrl = await dataService.uploadFile(file);
+        } catch (err) {
+            console.warn("Server upload failed, using local Data URL:", err);
+        }
+
+        const assetUrl = isFbx ? `${finalUrl}#fbx` : finalUrl;
+
+        if (selectedId) {
+            const selectedObj = objects.find(o => o.id === selectedId);
+            if (selectedObj && (selectedObj.isBot || selectedObj.isWeapon)) {
+                handleUpdateObject(selectedId, { type: 'Model', assetUrl });
+                return;
+            }
+        }
+
+        const newObj: MapObject = {
+            id: Date.now().toString(),
+            name: file.name,
+            type: 'Model',
+            position: [0, 5, 0],
+            rotation: [0, 0, 0],
+            scale: [1, 1, 1],
+            color: '#FFFFFF',
+            material: 'Plastic',
+            transparency: 0,
+            anchored: true,
+            canCollide: true,
+            assetUrl
+        };
+        setObjects([...objects, newObj]);
+        setSelectedId(newObj.id);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleExportMap = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(objects));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", "mapa_glidrovia.json");
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  };
+
+  const handleImportMap = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const json = JSON.parse(event.target?.result as string);
+        if (Array.isArray(json)) {
+          setObjects(json);
+          alert("¡Mapa importado con éxito!");
+        }
+      } catch (err) {
+        alert("Error al importar el archivo JSON.");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const fetchMyGames = async () => {
+    if (!username) return;
+    try {
+      const games = await dataService.getGamesByCreator(username);
+      setMyPublishedGames(games as any);
+      setShowImportServerModal(true);
+    } catch (err) {
+      console.error("Error fetching my games:", err);
+      // alert is blocked in iframe, but we'll keep it as a fallback or replace with UI
+    }
+  };
+
+  const handleImportAudio = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    try {
+        const url = await dataService.uploadFile(file);
+        
+        const newObj: MapObject = {
+            id: Date.now().toString(),
+            name: file.name,
+            type: 'Sound',
+            position: [0, 2, 0],
+            rotation: [0, 0, 0],
+            scale: [1, 1, 1],
+            color: '#00ffff',
+            material: 'Plastic',
+            transparency: 0,
+            anchored: true,
+            canCollide: false,
+            assetUrl: url,
+            volume: 1,
+            loop: true,
+            playing: true,
+            proximityTrigger: false,
+            triggerDistance: 5
+        };
+        setObjects([...objects, newObj]);
+        setSelectedId(newObj.id);
+    } catch (err) {
+        console.error("Error uploading audio:", err);
+    }
+  };
+
+  const handleImportVideo = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    try {
+        const url = await dataService.uploadFile(file);
+        
+        const newObj: MapObject = {
+            id: Date.now().toString(),
+            name: file.name,
+            type: 'Video',
+            position: [0, 5, 0],
+            rotation: [0, 0, 0],
+            scale: [10, 6, 1],
+            color: '#ffffff',
+            material: 'Plastic',
+            transparency: 0,
+            anchored: true,
+            canCollide: true,
+            assetUrl: url,
+            proximityTrigger: false,
+            triggerDistance: 10
+        };
+        setObjects([...objects, newObj]);
+        setSelectedId(newObj.id);
+    } catch (err) {
+        console.error("Error uploading video:", err);
+    }
+  };
+
+  const handleImportTexture = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file && !selectedId) return;
+    
+    try {
+        const url = await dataService.uploadFile(file!);
+        handleUpdateObject(selectedId!, { textureUrl: url });
+    } catch (err) {
+        console.error("Error uploading texture:", err);
+    }
+  };
+
+  useEffect(() => {
+    const handleMicCommand = (e: any) => {
+        const { command } = e.detail;
+        if (command === '/mic on') {
+            if (!isMicOn) toggleMic();
+        } else if (command === '/mic off') {
+            if (isMicOn) toggleMic();
+        }
+    };
+    window.addEventListener('chat-command', handleMicCommand);
+    return () => window.removeEventListener('chat-command', handleMicCommand);
+  }, [isMicOn]);
+
+  const handleUpdateObject = (id: string, newProps: Partial<MapObject>) => {
+    setObjects(prev => prev.map(obj => obj.id === id ? { ...obj, ...newProps } : obj));
+  };
+
+
+
+  const toggleMic = async () => {
+    if (isMicOn) {
+      if (mediaStream.current) {
+        mediaStream.current.getTracks().forEach(track => track.stop());
+        mediaStream.current = null;
+      }
+      setIsMicOn(false);
+      socketRef.current?.emit('update-player', activeServer?.id || 'global-lobby', { isTalking: false });
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaStream.current = stream;
+        webrtcManager.current?.setLocalStream(stream);
+        setIsMicOn(true);
+        socketRef.current?.emit('update-player', activeServer?.id || 'global-lobby', { isTalking: true });
+      } catch (err) {
+        console.error("Error accessing microphone:", err);
+        alert("No se pudo acceder al micrófono");
+      }
+    }
+  };
+
+
+
   // Component to interpolate remote players
-    const GameUI = () => (
+
+
+  const GameUI = () => (
         <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-[60]">
+            {/* Cinematic Controls */}
+            {objects.some(o => o.type === 'Camera') && (
+                <div className="absolute top-24 left-4 pointer-events-auto flex flex-col gap-2">
+                    <button 
+                        onClick={() => setActiveCinematicIndex(prev => prev === null ? 0 : (prev + 1) % objects.filter(o => o.type === 'Camera').length)}
+                        className={`p-3 rounded-full border-2 transition-all shadow-lg flex items-center gap-2 font-bold text-xs ${activeCinematicIndex !== null ? 'bg-orange-500 border-white text-white' : 'bg-black/60 border-white/20 text-gray-300'}`}
+                    >
+                        <VideoIcon size={20} /> 
+                        {activeCinematicIndex !== null ? `Cámara ${activeCinematicIndex + 1}` : 'Ver Cinemática'}
+                    </button>
+                    {activeCinematicIndex !== null && (
+                        <button 
+                            onClick={() => setActiveCinematicIndex(null)}
+                            className="p-2 bg-red-600 rounded-lg text-[10px] font-bold uppercase tracking-widest text-white shadow-lg"
+                        >
+                            Salir de Cámara
+                        </button>
+                    )}
+                </div>
+            )}
+            
             {/* Crosshair */}
             {isShooter && (
                 <div className="w-4 h-4 border-2 border-white/50 rounded-full flex items-center justify-center">
@@ -1272,7 +2005,7 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
                 </div>
 
                 <div className="max-h-48 overflow-y-auto flex flex-col gap-2 pr-2">
-                    {['PlayerOne', 'SniperPro', 'VoxelKing', 'ShadowNinja'].filter(u => u.toLowerCase().includes(searchQuery.toLowerCase())).map(user => (
+                    {['PlayerOne', 'SniperPro', 'VoxelKing', 'ShadowNinja'].filter(u => u.toLowerCase().includes((searchQuery || '').toLowerCase())).map(user => (
                         <div key={user} className="bg-white/5 p-3 rounded-xl flex items-center justify-between hover:bg-white/10 transition-colors">
                             <div className="flex items-center gap-3">
                                 <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full" />
@@ -1298,76 +2031,25 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
         </div>
     );
 
-  const RemotePlayerRenderer = ({ player, stream }: { player: RemotePlayer, stream?: MediaStream }) => {
-      const [currentPos] = useState(() => new THREE.Vector3(...player.position));
-      const [currentRot] = useState(() => new THREE.Euler(...player.rotation));
-      const audioRef = useRef<HTMLAudioElement | null>(null);
-      
-      useEffect(() => {
-          if (stream && !audioRef.current) {
-              const audio = new Audio();
-              audio.srcObject = stream;
-              audio.play().catch(e => console.error("Error playing remote stream", e));
-              audioRef.current = audio;
-          }
-          return () => {
-              if (audioRef.current) {
-                  audioRef.current.pause();
-                  audioRef.current.srcObject = null;
-                  audioRef.current = null;
-              }
-          };
-      }, [stream]);
 
-      useFrame((state, delta) => {
-          // If we have a target (future) position, lerp towards it
-          if (player.targetPosition && player.isMoving) {
-               const target = new THREE.Vector3(...player.targetPosition);
-               currentPos.lerp(target, delta * 5); // Faster lerp for responsiveness
-               
-               if (currentPos.distanceTo(target) > 0.1) {
-                   const angle = Math.atan2(target.x - currentPos.x, target.z - currentPos.z);
-                   currentRot.y = angle + Math.PI;
-               }
-          } else {
-              // Otherwise, snap/lerp to the current known position
-              const target = new THREE.Vector3(...player.position);
-              currentPos.lerp(target, 0.2); // Smooth snap
-              currentRot.y = THREE.MathUtils.lerp(currentRot.y, player.rotation[1], 0.2);
-          }
-      });
-
-      return (
-          <group>
-              <ErrorBoundary fallback={null}>
-                  <Suspense fallback={null}>
-                      <VoxelCharacter 
-                         config={player.config} 
-                         position={[currentPos.x, currentPos.y, currentPos.z]} 
-                         rotation={[0, currentRot.y, 0]}
-                         isMoving={player.isMoving}
-                         username={`${player.username} [${player.country || '??'}]`}
-                      />
-                  </Suspense>
-              </ErrorBoundary>
-              {player.isTalking && (
-                  <mesh position={[currentPos.x, currentPos.y + 3.5, currentPos.z]}>
-                      <sphereGeometry args={[0.1, 16, 16]} />
-                      <meshStandardMaterial color="#00ff00" emissive="#00ff00" emissiveIntensity={2} />
-                  </mesh>
-              )}
-          </group>
-      );
-  }
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#232527] overflow-hidden text-white font-sans relative">
       
-      {loadingStep > 0 && !isPlaying && <LoadingScreen loadingStep={loadingStep} />}
+      {loadingStep > 0 && !isPlaying && (
+        <LoadingScreen 
+            loadingStep={loadingStep} 
+            onSkip={() => {
+                setIsPlaying(true);
+                setLoadingStep(0);
+            }} 
+        />
+      )}
       
       {isPlaying && currentScene === 'Game' && <GameUI />}
       {isPlaying && currentScene === 'Lobby' && <LobbyUI />}
       
+      {isPlaying && <SpecialEffects objects={objects} />}
       {isPlaying && <GameControls />}
 
       {/* MULTIPLAYER STATUS OVERLAY */}
@@ -1390,24 +2072,158 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
           )}
       </div>
 
-      {showPublishModal && (
-          <div className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center">
-              <div className="bg-[#2b2d31] p-6 rounded-lg w-96 border border-gray-600 shadow-xl">
-                  <h2 className="text-xl font-bold mb-4">Publicar en VoxelSphere</h2>
-                  <input className="w-full bg-black/20 border border-gray-600 rounded p-2 mb-4" value={gameTitle} onChange={e => setGameTitle(e.target.value)} />
-                  <div className="flex gap-2 justify-end">
-                      <button onClick={() => setShowPublishModal(false)} className="px-4 py-2 hover:bg-white/10 rounded">Cancelar</button>
-                      <button onClick={() => { onPublish({ title: gameTitle, map: objects, skybox }); setShowPublishModal(false); alert("¡Experiencia Publicada!"); }} className="px-4 py-2 bg-blue-600 rounded font-bold">Publicar</button>
-                  </div>
-              </div>
-          </div>
-      )}
+      {showPublishModal && (() => {
+          const handlePublishGame = async () => {
+              setIsPublishing(true);
+              let thumbnailUrl = "https://picsum.photos/seed/voxel/800/600";
+              
+              if (thumbnailFile) {
+                  try {
+                      thumbnailUrl = await dataService.uploadFile(thumbnailFile);
+                  } catch (err) {
+                      console.error("Error uploading thumbnail:", err);
+                  }
+              }
+
+              onPublish({ 
+                  title: gameTitle, 
+                  map: objects, 
+                  skybox,
+                  thumbnail: thumbnailUrl,
+                  maxPlayers: isMultiplayer ? maxPlayers : 1,
+                  isMultiplayer: isMultiplayer
+              });
+              setIsPublishing(false);
+              setShowPublishModal(false);
+              alert("¡Experiencia Publicada!");
+          };
+
+          return (
+            <div className="absolute inset-0 z-50 bg-black/70 flex items-center justify-center">
+                <div className="bg-[#2b2d31] p-6 rounded-lg w-96 border border-gray-600 shadow-xl">
+                    <h2 className="text-xl font-bold mb-4">Publicar en Glidrovia</h2>
+                    <div className="space-y-4">
+                        <div>
+                            <label className="text-xs text-gray-400 font-bold uppercase">Nombre del Modo</label>
+                            <input className="w-full bg-black/20 border border-gray-600 rounded p-2 mt-1" value={gameTitle} onChange={e => setGameTitle(e.target.value)} />
+                        </div>
+                        <div>
+                            <label className="text-xs text-gray-400 font-bold uppercase">Miniatura (Foto)</label>
+                            <input 
+                                type="file" 
+                                accept="image/*" 
+                                className="w-full text-xs mt-1" 
+                                onChange={e => setThumbnailFile(e.target.files?.[0] || null)} 
+                            />
+                        </div>
+                        <div className="flex items-center justify-between bg-black/20 p-2 rounded border border-gray-600">
+                            <label className="text-xs text-gray-400 font-bold uppercase">Multijugador</label>
+                            <button 
+                                onClick={() => setIsMultiplayer(!isMultiplayer)}
+                                className={`w-10 h-5 rounded-full transition-colors relative ${isMultiplayer ? 'bg-blue-600' : 'bg-gray-700'}`}
+                            >
+                                <div className={`absolute top-1 w-3 h-3 rounded-full bg-white transition-all ${isMultiplayer ? 'left-6' : 'left-1'}`} />
+                            </button>
+                        </div>
+                        {isMultiplayer && (
+                            <div>
+                                <label className="text-xs text-gray-400 font-bold uppercase">Máximo de Jugadores</label>
+                                <input 
+                                    type="number" 
+                                    min="2"
+                                    max="100"
+                                    className="w-full bg-black/20 border border-gray-600 rounded p-2 mt-1" 
+                                    value={maxPlayers} 
+                                    onChange={e => setMaxPlayers(parseInt(e.target.value) || 2)} 
+                                />
+                            </div>
+                        )}
+                    </div>
+                    <div className="flex gap-2 justify-end mt-6">
+                        <button onClick={() => setShowPublishModal(false)} className="px-4 py-2 hover:bg-white/10 rounded">Cancelar</button>
+                        <button 
+                            disabled={isPublishing}
+                            onClick={handlePublishGame} 
+                            className="px-4 py-2 bg-blue-600 rounded font-bold disabled:opacity-50"
+                        >
+                            {isPublishing ? 'Publicando...' : 'Publicar'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+          );
+      })()}
       
       {!isPlaying && !isPlayMode && (
         <div className="flex flex-col bg-[#2b2d31] border-b border-[#111213]">
             <div className="h-14 flex items-center px-4 justify-between">
             <div className="flex items-center gap-6">
-                <div className="flex items-center gap-2"><span className="font-bold text-blue-500">ARCHIVO</span><span className="font-bold text-gray-300">INICIO</span></div>
+                <div className="flex items-center gap-2 relative">
+                    <button 
+                        onClick={() => setShowStudioMenu(!showStudioMenu)}
+                        className="font-bold text-white bg-blue-600 hover:bg-blue-700 px-4 py-1.5 rounded-lg transition-colors shadow-lg"
+                    >
+                        MENÚ
+                    </button>
+                    {showStudioMenu && (
+                        <div className="absolute top-full left-0 mt-2 w-64 bg-[#2b2d31] border border-gray-600 rounded-lg shadow-2xl z-50 py-2 overflow-hidden">
+                            <div className="px-3 py-1 text-xs font-bold text-gray-400 uppercase tracking-wider">Importar / Exportar</div>
+                            <button onClick={() => { fileInputRef.current?.click(); setShowStudioMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-blue-600 text-sm text-white flex items-center gap-3 transition-colors"><Upload size={16} className="text-purple-400" /> Modelo 3D</button>
+                            <button onClick={() => { fetchMyGames(); setShowStudioMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-blue-600 text-sm text-white flex items-center gap-3 transition-colors"><ServerIcon size={16} className="text-green-400" /> Desde el Servidor</button>
+                            <button onClick={() => { mapInputRef.current?.click(); setShowStudioMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-blue-600 text-sm text-white flex items-center gap-3 transition-colors"><FileBox size={16} className="text-yellow-400" /> Archivo Local (.json)</button>
+                            <button onClick={() => { handleExportMap(); setShowStudioMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-blue-600 text-sm text-white flex items-center gap-3 transition-colors"><Save size={16} className="text-blue-400" /> Exportar Mapa (.json)</button>
+                            
+                            {username === 'glidrovia' && (
+                                <button 
+                                    onClick={() => {
+                                        const officialConfig = {
+                                            bodyColors: { head: '#F5CD30', torso: '#0047AB', leftArm: '#F5CD30', rightArm: '#F5CD30', leftLeg: '#A2C429', rightLeg: '#A2C429' },
+                                            faceTextureUrl: null,
+                                            accessories: { hatModelUrl: null, shirtTextureUrl: null },
+                                            hideFace: false
+                                        };
+                                        // Create a model with this config
+                                        const id = Math.random().toString(36).substr(2, 9);
+                                        const newObj: MapObject = {
+                                            id,
+                                            name: 'Avatar Oficial',
+                                            type: 'Model',
+                                            position: [0, 5, 0],
+                                            rotation: [0, 0, 0],
+                                            scale: [4, 4, 4],
+                                            color: '#ffffff',
+                                            material: 'Plastic',
+                                            transparency: 0,
+                                            anchored: true,
+                                            canCollide: true,
+                                            isAvatarReplacement: true
+                                        };
+                                        setObjects([...objects, newObj]);
+                                        setSelectedId(id);
+                                        setShowStudioMenu(false);
+                                        alert("Avatar oficial importado al Studio");
+                                    }}
+                                    className="w-full text-left px-4 py-2 hover:bg-yellow-600 text-sm text-white flex items-center gap-3 transition-colors"
+                                >
+                                    <UserPlus size={16} className="text-yellow-400" /> Importar Avatar Oficial
+                                </button>
+                            )}
+
+                            <div className="h-px bg-gray-600 my-2"></div>
+                            
+                            <div className="px-3 py-1 text-xs font-bold text-gray-400 uppercase tracking-wider">Multimedia</div>
+                            <button onClick={() => { audioInputRef.current?.click(); setShowStudioMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-blue-600 text-sm text-white flex items-center gap-3 transition-colors"><Volume2 size={16} className="text-cyan-400" /> Sonido</button>
+                            <button onClick={() => { videoInputRef.current?.click(); setShowStudioMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-blue-600 text-sm text-white flex items-center gap-3 transition-colors"><VideoIcon size={16} className="text-orange-400" /> Video</button>
+                            
+                            <div className="h-px bg-gray-600 my-2"></div>
+                            
+                            <div className="px-3 py-1 text-xs font-bold text-gray-400 uppercase tracking-wider">Generar con IA</div>
+                            <button onClick={() => { generateAITemplate('BattleRoyale'); setShowStudioMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-purple-600 text-sm text-white transition-colors">IA: Battle Royale</button>
+                            <button onClick={() => { generateAITemplate('Obby'); setShowStudioMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-purple-600 text-sm text-white transition-colors">IA: Obby</button>
+                            <button onClick={() => { generateAITemplate('City'); setShowStudioMenu(false); }} className="w-full text-left px-4 py-2 hover:bg-purple-600 text-sm text-white transition-colors">IA: Ciudad</button>
+                        </div>
+                    )}
+                </div>
                 
                 {/* Skybox Menu */}
                 <div className="flex gap-1 bg-[#1e1f21] p-1 rounded-lg border border-white/5">
@@ -1424,18 +2240,18 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
                     ))}
                 </div>
 
-                <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-gray-500 font-bold uppercase">Plantilla</label>
-                    <select 
-                        className="bg-[#1e1f21] border border-white/10 rounded px-2 py-1 text-xs font-bold text-blue-400"
-                        onChange={(e) => {
-                            const template = TEMPLATES[e.target.value as keyof typeof TEMPLATES];
-                            if (template) setObjects(template);
-                        }}
-                    >
-                        {Object.keys(TEMPLATES).map(t => <option key={t} value={t}>{t.replace('_', ' ')}</option>)}
-                    </select>
-                </div>
+                    <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-gray-500 font-bold uppercase">Plantilla</label>
+                        <select 
+                            className="bg-[#1e1f21] border border-white/10 rounded px-2 py-1 text-xs font-bold text-blue-400"
+                            onChange={(e) => {
+                                const template = TEMPLATES[e.target.value as keyof typeof TEMPLATES];
+                                if (template) setObjects(template);
+                            }}
+                        >
+                            {Object.keys(TEMPLATES).map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
+                        </select>
+                    </div>
 
                 <div className="flex flex-col gap-1">
                     <label className="text-[10px] text-gray-500 font-bold uppercase">Escena</label>
@@ -1477,27 +2293,91 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
                          const newObj: MapObject = { id: Date.now().toString(), name: 'Cylinder', type: 'Cylinder', position: [0, 5, 0], rotation: [0,0,0], scale: [1,1,1], color: '#A2A2A2', material: 'Plastic', transparency: 0, anchored: false, canCollide: true };
                          setObjects([...objects, newObj]); setSelectedId(newObj.id);
                     }} className="p-1 hover:bg-white/10 rounded"><CylinderIcon size={20} className="text-yellow-400 transform rotate-45" /></button>
+                    <button onClick={() => { 
+                         const newObj: MapObject = { id: Date.now().toString(), name: 'Canvas', type: 'Canvas', position: [0, 5, 0], rotation: [0,0,0], scale: [1,1,1], color: '#FFFFFF', material: 'Plastic', transparency: 0, anchored: false, canCollide: true };
+                         setObjects([...objects, newObj]); setSelectedId(newObj.id);
+                    }} className="p-1 hover:bg-white/10 rounded"><Square size={20} className="text-purple-400" /></button>
+                    <button onClick={() => { 
+                         const newObj: MapObject = { id: Date.now().toString(), name: 'Text', type: 'Text', position: [0, 5, 0], rotation: [0,0,0], scale: [1,1,1], color: '#FFFFFF', material: 'Plastic', transparency: 0, anchored: false, canCollide: true };
+                         setObjects([...objects, newObj]); setSelectedId(newObj.id);
+                    }} className="p-1 hover:bg-white/10 rounded"><BoxIcon size={20} className="text-white" /></button>
+                    <button onClick={() => handleCreateObject('Button')} className="p-1 hover:bg-white/10 rounded"><CircleIcon size={20} className="text-orange-400" /></button>
+                    <button onClick={() => {
+                        const id = Date.now().toString();
+                        const newObj: MapObject = { 
+                            id, name: 'Cámara ' + (objects.filter(o=>o.type==='Camera').length + 1), 
+                            type: 'Camera', position: [0, 10, 0], rotation: [0, 0, 0], scale: [1, 1, 1], 
+                            color: '#ffffff', material: 'Plastic', transparency: 0, anchored: true, canCollide: false 
+                        };
+                        setObjects([...objects, newObj]);
+                        setSelectedId(id);
+                    }} className="p-1 hover:bg-white/10 rounded"><VideoIcon size={20} className="text-orange-500" /></button>
+                    <button onClick={() => handleCreateObject('Terrain')} className="p-1 hover:bg-white/10 rounded"><Mountain size={20} className="text-emerald-400" /></button>
+                    {selectedId && objects.find(o => o.id === selectedId)?.isTerrain && (
+                        <button 
+                            onClick={() => setSculptMode(!sculptMode)} 
+                            className={`p-1 rounded transition-colors ${sculptMode ? 'bg-emerald-600 text-white' : 'hover:bg-white/10 text-emerald-400'}`}
+                            title="Modo Esculpir Montañas"
+                        >
+                            <Mountain size={20} />
+                        </button>
+                    )}
                     
                     <input type="file" ref={fileInputRef} hidden accept=".glb,.gltf,.fbx" onChange={handleImportModel} />
-                    <button onClick={() => fileInputRef.current?.click()} className="flex flex-col items-center justify-center p-1 hover:bg-white/10 rounded">
-                        <Upload size={20} className="text-purple-400" />
-                        <span className="text-[10px]">Importar 3D</span>
-                    </button>
-
                     <input type="file" ref={audioInputRef} hidden accept="audio/*" onChange={handleImportAudio} />
-                    <button onClick={() => audioInputRef.current?.click()} className="flex flex-col items-center justify-center p-1 hover:bg-white/10 rounded">
-                        <Volume2 size={20} className="text-cyan-400" />
-                        <span className="text-[10px]">Sonido</span>
-                    </button>
-
                     <input type="file" ref={videoInputRef} hidden accept="video/*" onChange={handleImportVideo} />
-                    <button onClick={() => videoInputRef.current?.click()} className="flex flex-col items-center justify-center p-1 hover:bg-white/10 rounded">
-                        <VideoIcon size={20} className="text-orange-400" />
-                        <span className="text-[10px]">Video</span>
-                    </button>
+                    <input type="file" ref={mapInputRef} hidden accept=".json" onChange={handleImportMap} />
                 </div>
             </div>
             </div>
+
+            {/* Import from Server Modal */}
+            {showImportServerModal && (
+                <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-6">
+                    <div className="bg-[#1e1f21] w-full max-w-2xl rounded-2xl border border-white/10 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
+                        <div className="p-6 border-b border-white/5 flex items-center justify-between bg-gradient-to-r from-blue-600/20 to-transparent">
+                            <h2 className="text-xl font-black text-white uppercase tracking-tighter flex items-center gap-3">
+                                <ServerIcon className="text-blue-400" /> Importar desde el Servidor
+                            </h2>
+                            <button onClick={() => setShowImportServerModal(false)} className="text-gray-400 hover:text-white transition-colors">
+                                <ArrowLeft size={24} />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {myPublishedGames.length > 0 ? myPublishedGames.map(game => (
+                                <div 
+                                    key={game.id} 
+                                    onClick={() => {
+                                        if (game.mapData) {
+                                            setObjects(game.mapData);
+                                            setGameTitle(game.title);
+                                            setShowImportServerModal(false);
+                                            alert(`¡Mapa "${game.title}" cargado!`);
+                                        }
+                                    }}
+                                    className="bg-white/5 border border-white/10 rounded-xl p-4 cursor-pointer hover:bg-white/10 hover:border-blue-500/50 transition-all group"
+                                >
+                                    <div className="aspect-video rounded-lg overflow-hidden mb-3 relative">
+                                        <img src={game.thumbnail} alt={game.title} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" referrerPolicy="no-referrer" />
+                                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <Upload className="text-white" size={32} />
+                                        </div>
+                                    </div>
+                                    <div className="font-bold text-white truncate">{game.title}</div>
+                                    <div className="text-[10px] text-gray-500 uppercase font-bold mt-1">ID: {game.id}</div>
+                                </div>
+                            )) : (
+                                <div className="col-span-full py-12 text-center text-gray-500 font-bold uppercase tracking-widest">
+                                    No tienes juegos publicados aún.
+                                </div>
+                            )}
+                        </div>
+                        <div className="p-4 bg-black/20 border-t border-white/5 flex justify-end">
+                            <button onClick={() => setShowImportServerModal(false)} className="px-6 py-2 bg-white/10 hover:bg-white/20 rounded-lg font-bold text-sm transition-colors">Cerrar</button>
+                        </div>
+                    </div>
+                </div>
+            )}
             <div className="h-12 bg-[#232428] flex items-center px-4 gap-4 border-t border-[#111213]">
                 <div className="flex gap-2">
                     <button onClick={() => setShowPublishModal(true)} className="flex items-center gap-2 bg-[#2b2d31] border border-gray-600 hover:bg-gray-700 px-4 py-1.5 rounded text-sm font-bold transition-colors"><Save size={16} /> Publicar</button>
@@ -1522,9 +2402,6 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
                   }} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded shadow-lg flex items-center gap-2 border-2 border-white/20">
                       <ArrowLeft size={20} /> {isPlayMode ? 'Salir del Juego' : 'Detener'}
                   </button>
-                  <button onClick={toggleMic} className={`p-3 rounded-full shadow-lg border-2 border-white/20 ${isMicOn ? 'bg-green-600' : 'bg-gray-600'}`}>
-                      {isMicOn ? <Mic size={20} /> : <MicOff size={20} />}
-                  </button>
               </div>
               {activeServer && (
                   <div className="bg-black/50 p-2 rounded text-xs text-white border border-white/10 backdrop-blur-md">
@@ -1538,11 +2415,23 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
 
       <div className="flex-1 flex overflow-hidden">
         <div className="flex-1 bg-[#111213] relative">
-           <Canvas shadows dpr={[1, 2]}>
+           <Canvas shadows dpr={[1, 2]} camera={{ position: [20, 20, 20], fov: 50 }}>
               <ErrorBoundary fallback={<gridHelper args={[100, 100, 0xff0000, 0x444444]} />}>
                  {!isPlaying && <OrbitControls makeDefault />}
-                 <ambientLight intensity={0.5} />
-                 <directionalLight position={[50, 50, 25]} intensity={0.8} castShadow />
+                 <ambientLight intensity={0.4} />
+                 <directionalLight 
+                    position={[50, 100, 50]} 
+                    intensity={2.0} 
+                    castShadow 
+                    shadow-mapSize={[4096, 4096]}
+                    shadow-bias={-0.0001}
+                    shadow-camera-left={-200}
+                    shadow-camera-right={200}
+                    shadow-camera-top={200}
+                    shadow-camera-bottom={-200}
+                  />
+                  <Environment preset="city" />
+                  <ContactShadows position={[0, -0.99, 0]} opacity={0.4} scale={100} blur={2} far={10} />
                  
                  <Sky 
                     sunPosition={SKYBOXES[skybox as keyof typeof SKYBOXES].sunPosition as any} 
@@ -1551,14 +2440,42 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
                   />
                   {SKYBOXES[skybox as keyof typeof SKYBOXES].stars && <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />}
                   <fog attach="fog" args={[SKYBOXES[skybox as keyof typeof SKYBOXES].fog, 0, 200]} />
+                  
+                  <GraphicsEngine />
+                  
+                  {isPlaying && activeCinematicIndex !== null && (
+                      <CinematicCamera objects={objects} index={activeCinematicIndex} isPlaying={isPlaying} />
+                  )}
 
                  {!isPlaying && <Grid infiniteGrid sectionSize={4} sectionColor="#6f6f6f" cellColor="#4a4a4a" position={[0, -0.01, 0]} />}
+                  
+                  {isPlaying && (
+                      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]} receiveShadow>
+                          <planeGeometry args={[1000, 1000]} />
+                          <MeshReflectorMaterial
+                              blur={[300, 100]}
+                              resolution={1024}
+                              mixBlur={1}
+                              mixStrength={60}
+                              roughness={1}
+                              depthScale={1.2}
+                              minDepthThreshold={0.4}
+                              maxDepthThreshold={1.4}
+                              color="#151515"
+                              metalness={0.5}
+                              mirror={0.8}
+                          />
+                      </mesh>
+                  )}
 
                  {isPlaying && (
                      <PlayerController 
                         avatarConfig={avatarConfig} 
                         mapObjects={objects} 
-                        username={playerName} 
+                        username={username}
+                        settings={settings}
+                        playerName={playerName}
+                        supabaseChannelRef={supabaseChannelRef}
                         activeServer={activeServer} 
                         isPlaying={isPlaying}
                         currentScene={currentScene}
@@ -1568,15 +2485,26 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
                         setObjects={setObjects}
                         setKills={setKills}
                         setShowKillIcon={setShowKillIcon}
+                        globalAvatarReplacement={globalAvatarReplacement}
                      />
                  )}
                  
                  {/* RENDER REMOTE PLAYERS */}
                  {(isPlaying || !isPlayMode) && remotePlayers.map(rp => (
-                     <RemotePlayerRenderer key={rp.id} player={rp} stream={remoteStreams[rp.id]} />
+                     <RemotePlayerRenderer key={rp.id} player={rp} stream={remoteStreams[rp.id]} globalAvatarReplacement={globalAvatarReplacement} />
                  ))}
 
-                 <RenderMap />
+                 <Suspense fallback={null}>
+                    <MapRenderer 
+                        objects={objects}
+                        isPlaying={isPlaying}
+                        selectedId={selectedId}
+                        transformMode={transformMode}
+                        handleUpdateObject={handleUpdateObject}
+                        setSelectedId={setSelectedId}
+                        sculptMode={sculptMode}
+                   />
+                 </Suspense>
                  
                  {!isPlaying && (
                      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1, 0]} onClick={() => setSelectedId(null)}>
@@ -1615,6 +2543,74 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
                                             onChange={e => handleUpdateObject(obj.id, { name: e.target.value })}
                                         />
                                     </div>
+
+                                    {/* NUMERICAL INPUTS FOR TRANSFORM */}
+                                    <div className="space-y-2 border-t border-white/5 pt-2">
+                                        <label className="text-[10px] text-gray-500 font-bold uppercase">Posición</label>
+                                        <div className="grid grid-cols-3 gap-1">
+                                            {['x', 'y', 'z'].map((axis, i) => (
+                                                <div key={axis} className="flex flex-col gap-0.5">
+                                                    <span className="text-[8px] text-gray-600 uppercase text-center">{axis}</span>
+                                                    <input 
+                                                        type="number" 
+                                                        step="0.1"
+                                                        className="bg-black/40 border border-gray-800 rounded px-1 py-0.5 text-[10px] text-center"
+                                                        value={obj.position[i]}
+                                                        onChange={e => {
+                                                            const newPos = [...obj.position] as [number, number, number];
+                                                            newPos[i] = parseFloat(e.target.value) || 0;
+                                                            handleUpdateObject(obj.id, { position: newPos });
+                                                        }}
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] text-gray-500 font-bold uppercase">Rotación</label>
+                                        <div className="grid grid-cols-3 gap-1">
+                                            {['x', 'y', 'z'].map((axis, i) => (
+                                                <div key={axis} className="flex flex-col gap-0.5">
+                                                    <span className="text-[8px] text-gray-600 uppercase text-center">{axis}</span>
+                                                    <input 
+                                                        type="number" 
+                                                        step="0.1"
+                                                        className="bg-black/40 border border-gray-800 rounded px-1 py-0.5 text-[10px] text-center"
+                                                        value={obj.rotation[i]}
+                                                        onChange={e => {
+                                                            const newRot = [...obj.rotation] as [number, number, number];
+                                                            newRot[i] = parseFloat(e.target.value) || 0;
+                                                            handleUpdateObject(obj.id, { rotation: newRot });
+                                                        }}
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] text-gray-500 font-bold uppercase">Escala</label>
+                                        <div className="grid grid-cols-3 gap-1">
+                                            {['x', 'y', 'z'].map((axis, i) => (
+                                                <div key={axis} className="flex flex-col gap-0.5">
+                                                    <span className="text-[8px] text-gray-600 uppercase text-center">{axis}</span>
+                                                    <input 
+                                                        type="number" 
+                                                        step="0.1"
+                                                        className="bg-black/40 border border-gray-800 rounded px-1 py-0.5 text-[10px] text-center"
+                                                        value={obj.scale[i]}
+                                                        onChange={e => {
+                                                            const newScale = [...obj.scale] as [number, number, number];
+                                                            newScale[i] = parseFloat(e.target.value) || 0;
+                                                            handleUpdateObject(obj.id, { scale: newScale });
+                                                        }}
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
                                     <div className="flex flex-col gap-1">
                                         <label className="text-[10px] text-gray-500 font-bold uppercase">Color</label>
                                         <input 
@@ -1652,20 +2648,85 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
                                         </div>
                                     )}
 
-                                    {obj.type === 'Sound' && (
+                                    {['Part', 'Sphere', 'Wedge', 'Cylinder'].includes(obj.type) && (
                                         <div className="flex flex-col gap-1">
-                                            <label className="text-[10px] text-gray-500 font-bold uppercase">Evento de Sonido</label>
-                                            <select 
-                                                className="bg-black/20 border border-gray-700 rounded px-2 py-1 text-xs"
-                                                value={obj.trigger || 'None'}
-                                                onChange={e => handleUpdateObject(obj.id, { trigger: e.target.value as any })}
-                                            >
-                                                {['None', 'OnDeath', 'OnJump', 'OnFall', 'OnSpawn'].map(t => (
-                                                    <option key={t} value={t}>{t}</option>
-                                                ))}
-                                            </select>
+                                            <label className="text-[10px] text-gray-500 font-bold uppercase">Imagen de Galería (Textura)</label>
+                                            
+                                            {/* TEXTURE PREVIEW SPHERE */}
+                                            <div className="w-full aspect-square bg-black/40 rounded-lg border border-white/10 mb-2 overflow-hidden relative">
+                                                <Canvas camera={{ position: [0, 0, 2] }}>
+                                                    <ambientLight intensity={0.5} />
+                                                    <pointLight position={[10, 10, 10]} />
+                                                    <mesh>
+                                                        <sphereGeometry args={[0.8, 32, 32]} />
+                                                        <MapMaterial type={obj.material} color={obj.color} textureUrl={obj.textureUrl} />
+                                                    </mesh>
+                                                    <OrbitControls enableZoom={false} />
+                                                </Canvas>
+                                                <div className="absolute bottom-1 right-1 text-[8px] text-white/30 uppercase font-bold">Vista Previa</div>
+                                            </div>
+
+                                            <div className="flex gap-2">
+                                                {obj.textureUrl && (
+                                                    <img src={obj.textureUrl} className="w-10 h-10 rounded border border-white/10 object-cover" referrerPolicy="no-referrer" />
+                                                )}
+                                                <button 
+                                                    onClick={() => {
+                                                        const input = document.createElement('input');
+                                                        input.type = 'file';
+                                                        input.accept = 'image/*';
+                                                        input.onchange = (e: any) => handleImportTexture(e);
+                                                        input.click();
+                                                    }}
+                                                    className="flex-1 bg-blue-600/20 hover:bg-blue-600/40 border border-blue-500/30 py-1 rounded text-[10px] font-bold uppercase"
+                                                >
+                                                    {obj.textureUrl ? 'Cambiar Imagen' : 'Colocar Imagen'}
+                                                </button>
+                                                {obj.textureUrl && (
+                                                    <button onClick={() => handleUpdateObject(obj.id, { textureUrl: undefined })} className="p-1 text-red-400 hover:bg-red-400/10 rounded">X</button>
+                                                )}
+                                            </div>
                                         </div>
                                     )}
+
+                                    {(obj.type === 'Sound' || obj.type === 'Video') && (
+                                        <div className="space-y-2 border-t border-white/5 pt-2">
+                                            <div className="flex items-center justify-between">
+                                                <label className="text-[10px] text-gray-500 font-bold uppercase">Proximidad (Trigger)</label>
+                                                <input 
+                                                    type="checkbox"
+                                                    checked={obj.proximityTrigger || false}
+                                                    onChange={e => handleUpdateObject(obj.id, { proximityTrigger: e.target.checked })}
+                                                />
+                                            </div>
+                                            {obj.proximityTrigger && (
+                                                <div className="flex flex-col gap-1">
+                                                    <label className="text-[10px] text-gray-500 font-bold uppercase">Distancia de Activación</label>
+                                                    <input 
+                                                        type="number"
+                                                        className="bg-black/20 border border-gray-700 rounded px-2 py-1 text-xs"
+                                                        value={obj.triggerDistance || 5}
+                                                        onChange={e => handleUpdateObject(obj.id, { triggerDistance: parseFloat(e.target.value) })}
+                                                    />
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    <div className="flex flex-col gap-1">
+                                        <label className="text-[10px] text-gray-500 font-bold uppercase">Efecto Especial</label>
+                                        <select 
+                                            className="bg-black/20 border border-gray-700 rounded px-2 py-1 text-xs"
+                                            value={obj.effect || 'none'}
+                                            onChange={e => handleUpdateObject(obj.id, { effect: e.target.value as any })}
+                                        >
+                                            <option value="none">Ninguno</option>
+                                            <option value="snow">Nieve</option>
+                                            <option value="fire">Fuego</option>
+                                            <option value="lights">Luces de Colores</option>
+                                            <option value="rainbow">Arcoíris</option>
+                                        </select>
+                                    </div>
 
                                     {obj.isBot && (
                                         <div className="space-y-4 border-t border-white/5 pt-4">
@@ -1734,6 +2795,26 @@ export const StudioPage: React.FC<StudioProps> = ({ onPublish, avatarConfig, ini
                                                 })));
                                             }}
                                         />
+                                    </div>
+
+                                    <div className="flex items-center justify-between">
+                                        <label className="text-[10px] text-gray-500 font-bold uppercase">Colisión</label>
+                                        <button 
+                                            onClick={() => handleUpdateObject(obj.id, { canCollide: !obj.canCollide })}
+                                            className={`w-10 h-5 rounded-full transition-colors relative ${obj.canCollide ? 'bg-blue-600' : 'bg-gray-700'}`}
+                                        >
+                                            <div className={`absolute top-1 w-3 h-3 rounded-full bg-white transition-all ${obj.canCollide ? 'left-6' : 'left-1'}`} />
+                                        </button>
+                                    </div>
+
+                                    <div className="flex items-center justify-between">
+                                        <label className="text-[10px] text-gray-500 font-bold uppercase">Mesh Colisión</label>
+                                        <button 
+                                            onClick={() => handleUpdateObject(obj.id, { meshCollision: !obj.meshCollision })}
+                                            className={`w-10 h-5 rounded-full transition-colors relative ${obj.meshCollision ? 'bg-blue-600' : 'bg-gray-700'}`}
+                                        >
+                                            <div className={`absolute top-1 w-3 h-3 rounded-full bg-white transition-all ${obj.meshCollision ? 'left-6' : 'left-1'}`} />
+                                        </button>
                                     </div>
 
                                     <div className="flex items-center justify-between">

@@ -27,7 +27,10 @@ const storage = multer.diskStorage({
     cb(null, uniqueSuffix + path.extname(file.originalname));
   }
 });
-const upload = multer({ storage });
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+});
 
 // Database setup
 const DB_PATH = path.join(__dirname, "db.json");
@@ -35,6 +38,7 @@ const DB_PATH = path.join(__dirname, "db.json");
 interface Database {
   users: Record<string, any>;
   games: any[];
+  regions?: any[];
 }
 
 function readDB(): Database {
@@ -42,14 +46,17 @@ function readDB(): Database {
     const initialDB: Database = {
       users: {},
       games: [
-        { id: '1', title: 'Voxel City RP', creator: 'VoxelSphere', thumbnail: 'https://picsum.photos/seed/city/768/432', likes: '94%', playing: 450000, mapData: undefined },
-        { id: '2', title: 'Tower of Voxels', creator: 'User123', thumbnail: 'https://picsum.photos/seed/tower/768/432', likes: '88%', playing: 12000, mapData: undefined }
-      ]
+        { id: '1', title: 'Glidrovia City RP', creator: 'Glidrovia', thumbnail: 'https://picsum.photos/seed/city/768/432', likes: '94%', playing: 450000, mapData: undefined },
+        { id: '2', title: 'Tower of Glidrovia', creator: 'User123', thumbnail: 'https://picsum.photos/seed/tower/768/432', likes: '88%', playing: 12000, mapData: undefined }
+      ],
+      regions: []
     };
     fs.writeFileSync(DB_PATH, JSON.stringify(initialDB, null, 2));
     return initialDB;
   }
-  return JSON.parse(fs.readFileSync(DB_PATH, "utf-8"));
+  const db = JSON.parse(fs.readFileSync(DB_PATH, "utf-8"));
+  if (!db.regions) db.regions = [];
+  return db;
 }
 
 function writeDB(db: Database) {
@@ -73,10 +80,26 @@ async function startServer() {
   // API Routes
   app.use("/uploads", express.static(UPLOADS_DIR));
 
-  app.post("/api/upload", upload.single('file'), (req, res) => {
-    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-    const url = `/uploads/${req.file.filename}`;
-    res.json({ url });
+  app.use((req, res, next) => {
+    console.log(`${req.method} ${req.url}`);
+    next();
+  });
+
+  app.post("/api/upload", (req, res) => {
+    upload.single('file')(req, res, (err) => {
+      if (err) {
+        console.error("Multer error:", err);
+        return res.status(400).json({ error: err.message || "Error uploading file" });
+      }
+      const file = (req as any).file;
+      if (!file) {
+        console.error("Upload failed: No file received");
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+      console.log("File uploaded successfully:", file.filename);
+      const url = `/uploads/${file.filename}`;
+      res.json({ url });
+    });
   });
 
   app.get("/api/games", (req, res) => {
@@ -123,6 +146,19 @@ async function startServer() {
     }
   });
 
+  app.post("/api/user/:username/gallery", (req, res) => {
+    const { username } = req.params;
+    const { gallery } = req.body;
+    const db = readDB();
+    if (db.users[username]) {
+      db.users[username].gallery = gallery;
+      writeDB(db);
+      res.json({ success: true });
+    } else {
+      res.status(404).json({ error: "User not found" });
+    }
+  });
+
   app.delete("/api/games/:id", (req, res) => {
     const { id } = req.params;
     const db = readDB();
@@ -131,14 +167,80 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.post("/api/login", (req, res) => {
-    const { username } = req.body;
+  app.get("/api/admin/users", (req, res) => {
+    const { admin_password } = req.query;
+    if (admin_password !== "glidroviaoficial") {
+      return res.status(403).json({ error: "No autorizado" });
+    }
     const db = readDB();
+    res.json(db.users);
+  });
+
+  app.get("/api/users", (req, res) => {
+    const { q } = req.query;
+    const db = readDB();
+    const users = Object.values(db.users)
+        .filter(u => u.username !== 'Invitado')
+        .map(u => ({
+            username: u.username || '',
+            displayName: u.displayName || '',
+            avatarConfig: u.avatarConfig,
+            rank: u.rank || ((u.username || '').toLowerCase() === 'glidrovia' ? 'Platinum' : 'Standard')
+        }));
+    
+    if (q) {
+        const queryStr = (q as string || '').toLowerCase();
+        const filtered = users.filter(u => 
+            (u.username || '').toLowerCase().includes(queryStr) || 
+            (u.displayName || '').toLowerCase().includes(queryStr)
+        );
+        return res.json(filtered);
+    }
+    res.json(users);
+  });
+
+  app.post("/api/login", (req, res) => {
+    const { username, password } = req.body;
+    const db = readDB();
+    
+    // Official Account Logic
+    if (username === "glidrovia") {
+      if (password !== "glidroviaoficial") {
+        return res.status(401).json({ error: "Contraseña incorrecta para la cuenta oficial" });
+      }
+      
+      if (!db.users[username]) {
+        db.users[username] = {
+          username,
+          displayName: "Glidrovia Oficial",
+          robux: 99999,
+          drovis: 99999, // Official account gets 99999
+          rank: 'Platinum',
+          usernameChangeCards: 1,
+          friends: [],
+          avatarConfig: {
+            bodyColors: {
+              head: '#F5CD30', torso: '#0047AB', leftArm: '#F5CD30', rightArm: '#F5CD30', leftLeg: '#A2C429', rightLeg: '#A2C429'
+            },
+            faceTextureUrl: null,
+            accessories: { hatModelUrl: null, shirtTextureUrl: null },
+            hideFace: false
+          },
+          settings: { language: 'es', backgroundColor: '#1a1b1e' }
+        };
+        writeDB(db);
+      }
+      return res.json(db.users[username]);
+    }
+
     if (!db.users[username]) {
       db.users[username] = {
         username,
         displayName: username,
         robux: 1540,
+        drovis: 400, // Other accounts get 400
+        rank: 'Standard',
+        usernameChangeCards: 1,
         friends: [],
         avatarConfig: {
           bodyColors: {
@@ -181,6 +283,86 @@ async function startServer() {
     }
   });
 
+  app.post("/api/user/:username/username", (req, res) => {
+    const { username } = req.params;
+    const { newUsername } = req.body;
+    const db = readDB();
+
+    if (!db.users[username]) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    if (db.users[newUsername]) {
+      return res.status(400).json({ error: "Username already taken" });
+    }
+
+    const userData = db.users[username];
+    userData.username = newUsername;
+    userData.displayName = newUsername; // Update display name too
+    
+    // Transfer data
+    db.users[newUsername] = userData;
+    delete db.users[username];
+    
+    writeDB(db);
+    res.json(userData);
+  });
+
+  app.get("/api/regions", (req, res) => {
+    const db = readDB();
+    res.json(db.regions || []);
+  });
+
+  app.post("/api/regions", (req, res) => {
+    const { name, url, key, creator } = req.body;
+    const db = readDB();
+    
+    const newRegion = {
+      id: `custom-${Date.now()}`,
+      name,
+      url,
+      key,
+      creator,
+      label: `${name} 🚀`,
+      emoji: '🚀',
+      createdAt: new Date().toISOString()
+    };
+    
+    // Update existing if name + creator matches
+    const existingIndex = (db.regions || []).findIndex(r => r.name === name && r.creator === creator);
+    if (existingIndex !== -1) {
+      db.regions![existingIndex] = newRegion;
+    } else {
+      db.regions = [newRegion, ...(db.regions || [])];
+    }
+    
+    writeDB(db);
+    res.json(newRegion);
+  });
+
+  app.post("/api/user/purchase", (req, res) => {
+    const { username, itemId, price } = req.body;
+    const db = readDB();
+    
+    if (!db.users[username]) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+    
+    const user = db.users[username];
+    const currentDrovis = user.drovis || 0;
+    
+    if (currentDrovis < price) {
+      return res.status(400).json({ error: "Drovis insuficientes" });
+    }
+    
+    user.drovis = currentDrovis - price;
+    if (!user.clothingHistory) user.clothingHistory = [];
+    user.clothingHistory.push(itemId);
+    
+    writeDB(db);
+    res.json({ success: true, newDrovis: user.drovis });
+  });
+
   app.get("/api/user/:username/studio", (req, res) => {
     const { username } = req.params;
     const db = readDB();
@@ -212,6 +394,105 @@ async function startServer() {
 
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
+
+    // Real-time Publishing
+    socket.on("publish-game", (gameData) => {
+      const db = readDB();
+      const newGame = {
+        ...gameData,
+        id: gameData.id || Date.now().toString(),
+        likesCount: 0,
+        stars: 0,
+        starCount: 0,
+        playing: 0,
+        createdAt: new Date().toISOString()
+      };
+      db.games.unshift(newGame);
+      writeDB(db);
+      io.emit("game-published", newGame);
+    });
+
+    socket.on("publish-video", (videoData) => {
+      const db = readDB() as any;
+      if (!db.videos) db.videos = [];
+      const newVideo = {
+        ...videoData,
+        id: Date.now().toString(),
+        likes: [],
+        createdAt: new Date().toISOString()
+      };
+      db.videos.unshift(newVideo);
+      writeDB(db);
+      io.emit("video-published", newVideo);
+    });
+
+    socket.on("publish-item", (itemData) => {
+      const db = readDB() as any;
+      if (!db.items) db.items = [];
+      const newItem = {
+        ...itemData,
+        id: Date.now().toString(),
+        createdAt: new Date().toISOString()
+      };
+      db.items.unshift(newItem);
+      writeDB(db);
+      io.emit("item-published", newItem);
+    });
+
+    socket.on("rate-game", ({ gameId, stars }) => {
+      const db = readDB();
+      const gameIndex = db.games.findIndex(g => g.id === gameId);
+      if (gameIndex !== -1) {
+        const game = db.games[gameIndex];
+        const currentTotalStars = (game.stars || 0) * (game.starCount || 0);
+        const newStarCount = (game.starCount || 0) + 1;
+        const newStars = (currentTotalStars + stars) / newStarCount;
+        
+        db.games[gameIndex] = {
+          ...game,
+          stars: newStars,
+          starCount: newStarCount
+        };
+        writeDB(db);
+        io.emit("game-updated", db.games[gameIndex]);
+      }
+    });
+
+    socket.on("like-game", ({ gameId }) => {
+      const db = readDB();
+      const gameIndex = db.games.findIndex(g => g.id === gameId);
+      if (gameIndex !== -1) {
+        const game = db.games[gameIndex];
+        db.games[gameIndex] = {
+          ...game,
+          likesCount: (game.likesCount || 0) + 1
+        };
+        writeDB(db);
+        io.emit("game-updated", db.games[gameIndex]);
+      }
+    });
+
+    socket.on("play-game", ({ gameId, username }) => {
+      const db = readDB();
+      if (db.users[username]) {
+        if (!db.users[username].playedHistory) db.users[username].playedHistory = [];
+        if (!db.users[username].playedHistory.includes(gameId)) {
+          db.users[username].playedHistory.unshift(gameId);
+          writeDB(db);
+        }
+      }
+    });
+
+    socket.on("use-clothing", ({ itemId, username }) => {
+      const db = readDB();
+      if (db.users[username]) {
+        if (!db.users[username].clothingHistory) db.users[username].clothingHistory = [];
+        if (!db.users[username].clothingHistory.includes(itemId)) {
+          db.users[username].clothingHistory.unshift(itemId);
+          writeDB(db);
+        }
+      }
+    });
 
     socket.on("join-room", (roomId, userData) => {
       socket.join(roomId);
@@ -290,7 +571,7 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`VoxelSphere Server is starting...`);
+    console.log(`Glidrovia Server is starting...`);
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
 }

@@ -1,9 +1,11 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, Suspense } from 'react';
 import { Canvas, useFrame, useLoader } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, ContactShadows, Environment, useGLTF, Text } from '@react-three/drei';
+import { OrbitControls, PerspectiveCamera, ContactShadows, Environment, useGLTF, Text, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
+import { ImportedModel } from './ModelLoaders';
 import { AvatarConfig } from '../types';
+import { GraphicsEngine } from './GraphicsEngine';
 
 import ErrorBoundary from './ErrorBoundary';
 
@@ -25,6 +27,12 @@ const AccessoryModel = ({ url, position, scale }: { url: string; position: any; 
   if (!url) return null;
   const isFbx = url.includes('#fbx');
   const cleanUrl = url.replace('#fbx', '');
+  
+  // Check extension
+  const isImage = cleanUrl.toLowerCase().endsWith('.jpg') || cleanUrl.toLowerCase().endsWith('.png') || cleanUrl.toLowerCase().endsWith('.jpeg');
+  if (isImage) {
+      return null;
+  }
 
   if (isFbx) {
     return <AccessoryFBX url={cleanUrl} position={position} scale={scale} />;
@@ -35,7 +43,17 @@ const AccessoryModel = ({ url, position, scale }: { url: string; position: any; 
 // --- HEAD COMPONENTS ---
 
 const TexturedHead = ({ url, materialProps }: { url: string; materialProps: any }) => {
-  const texture = useLoader(THREE.TextureLoader, url);
+  return (
+    <ErrorBoundary fallback={<ColoredHead color={materialProps.color || "#F5CD30"} materialProps={materialProps} />}>
+      <Suspense fallback={<ColoredHead color={materialProps.color || "#F5CD30"} materialProps={materialProps} />}>
+        <HeadTextureLoader url={url} materialProps={materialProps} />
+      </Suspense>
+    </ErrorBoundary>
+  );
+};
+
+const HeadTextureLoader = ({ url, materialProps }: { url: string; materialProps: any }) => {
+  const texture = useTexture(url);
   return (
     <mesh name="Head">
       <cylinderGeometry args={[0.35, 0.35, 0.7, 32]} />
@@ -113,7 +131,17 @@ interface CharacterProps {
 }
 
 const Shirt = ({ url }: { url: string }) => {
-  const texture = useLoader(THREE.TextureLoader, url);
+  return (
+    <ErrorBoundary fallback={null}>
+      <Suspense fallback={null}>
+        <ShirtTextureLoader url={url} />
+      </Suspense>
+    </ErrorBoundary>
+  );
+};
+
+const ShirtTextureLoader = ({ url }: { url: string }) => {
+  const texture = useTexture(url);
   return (
     <mesh position={[0, 0, 0.26]}>
       <planeGeometry args={[0.8, 0.8]} />
@@ -124,7 +152,21 @@ const Shirt = ({ url }: { url: string }) => {
 
 export const VoxelCharacter = ({ config, position = [0, 0, 0], rotation = [0, 0, 0], isMoving = false, isJumping = false, weaponEquipped = false, selectedAnimation, username }: CharacterProps) => {
   const group = useRef<THREE.Group>(null);
+  const rightArmRef = useRef<THREE.Mesh>(null);
   
+  if (config.invisible) return null;
+
+  if (config.customModelUrl) {
+    const isFbx = config.customModelUrl.toLowerCase().includes('fbx');
+    return (
+      <ErrorBoundary fallback={<mesh><boxGeometry args={[1,1,1]} /><meshStandardMaterial color="red" wireframe /></mesh>}>
+        <Suspense fallback={null}>
+          <ImportedModel url={config.customModelUrl} isFbx={isFbx} isPlaying={true} targetHeight={3} />
+        </Suspense>
+      </ErrorBoundary>
+    );
+  }
+
   useFrame((state) => {
     if (group.current) {
       const t = state.clock.getElapsedTime();
@@ -215,7 +257,11 @@ export const VoxelCharacter = ({ config, position = [0, 0, 0], rotation = [0, 0,
     }
   });
 
-  const materialProps = { roughness: 0.5, metalness: 0 };
+  const materialProps = { 
+    roughness: 0.3, 
+    metalness: 0.1,
+    envMapIntensity: 1.5
+  };
 
   return (
     <group ref={group} position={new THREE.Vector3(...position)} rotation={new THREE.Euler(...rotation)} dispose={null}>
@@ -279,7 +325,7 @@ export const VoxelCharacter = ({ config, position = [0, 0, 0], rotation = [0, 0,
       </group>
 
       {/* Torso */}
-      <mesh position={[0, 0.8, 0]} name="Torso">
+      <mesh position={[0, 0.8, 0]} name="Torso" castShadow receiveShadow>
         <boxGeometry args={[1, 1, 0.5]} />
         <meshStandardMaterial color={config.bodyColors.torso} {...materialProps} />
         {config.accessories.shirtTextureUrl && (
@@ -290,25 +336,31 @@ export const VoxelCharacter = ({ config, position = [0, 0, 0], rotation = [0, 0,
       </mesh>
 
       {/* Left Arm */}
-      <mesh position={[-0.75, 0.8, 0]} name="LeftArm">
+      <mesh position={[-0.75, 0.8, 0]} name="LeftArm" castShadow receiveShadow>
         <boxGeometry args={[0.5, 1, 0.5]} />
         <meshStandardMaterial color={config.bodyColors.leftArm} {...materialProps} />
       </mesh>
 
       {/* Right Arm */}
-      <mesh position={[0.75, 0.8, 0]} name="RightArm">
+      <mesh position={[0.75, 0.8, 0]} name="RightArm" castShadow receiveShadow>
         <boxGeometry args={[0.5, 1, 0.5]} />
         <meshStandardMaterial color={config.bodyColors.rightArm} {...materialProps} />
+        {weaponEquipped && (
+            <mesh position={[0, -0.5, 0.4]} rotation={[Math.PI / 2, 0, 0]} castShadow receiveShadow>
+                <boxGeometry args={[0.15, 0.8, 0.2]} />
+                <meshStandardMaterial color="#333" />
+            </mesh>
+        )}
       </mesh>
 
       {/* Left Leg */}
-      <mesh position={[-0.26, -0.2, 0]} name="LeftLeg">
+      <mesh position={[-0.26, -0.2, 0]} name="LeftLeg" castShadow receiveShadow>
         <boxGeometry args={[0.48, 1, 0.5]} />
         <meshStandardMaterial color={config.bodyColors.leftLeg} {...materialProps} />
       </mesh>
 
       {/* Right Leg */}
-      <mesh position={[0.26, -0.2, 0]} name="RightLeg">
+      <mesh position={[0.26, -0.2, 0]} name="RightLeg" castShadow receiveShadow>
         <boxGeometry args={[0.48, 1, 0.5]} />
         <meshStandardMaterial color={config.bodyColors.rightLeg} {...materialProps} />
       </mesh>
@@ -319,9 +371,10 @@ export const VoxelCharacter = ({ config, position = [0, 0, 0], rotation = [0, 0,
 interface AvatarSceneProps {
   config?: AvatarConfig;
   interactive?: boolean;
+  globalAvatar?: { url: string; isFbx: boolean };
 }
 
-export const AvatarScene: React.FC<AvatarSceneProps> = ({ config, interactive = true }) => {
+export const AvatarScene: React.FC<AvatarSceneProps> = ({ config, interactive = true, globalAvatar }) => {
   const defaultConfig: AvatarConfig = {
     bodyColors: {
       head: '#F5CD30', torso: '#0047AB', leftArm: '#F5CD30',
@@ -329,7 +382,8 @@ export const AvatarScene: React.FC<AvatarSceneProps> = ({ config, interactive = 
     },
     faceTextureUrl: null,
     accessories: { hatModelUrl: null, shirtTextureUrl: null },
-    hideFace: false
+    hideFace: false,
+    selectedAnimation: 'Idle'
   };
 
   const activeConfig = config || defaultConfig;
@@ -347,13 +401,18 @@ export const AvatarScene: React.FC<AvatarSceneProps> = ({ config, interactive = 
         <group position={[0, -0.5, 0]}>
             <ErrorBoundary fallback={<mesh><boxGeometry args={[1,1,1]} /><meshStandardMaterial color="red" wireframe /></mesh>}>
                 <React.Suspense fallback={null}>
-                   <VoxelCharacter config={activeConfig} />
+                   {globalAvatar?.url ? (
+                       <ImportedModel url={globalAvatar.url} isFbx={globalAvatar.isFbx} isPlaying={true} targetHeight={3} />
+                   ) : (
+                       <VoxelCharacter config={activeConfig} selectedAnimation={activeConfig.selectedAnimation} />
+                   )}
                 </React.Suspense>
             </ErrorBoundary>
             <ContactShadows resolution={1024} scale={10} blur={2} opacity={0.5} far={10} color="#000000" />
         </group>
         <OrbitControls enablePan={false} enableZoom={interactive} minPolarAngle={Math.PI / 4} maxPolarAngle={Math.PI / 1.5} />
         <Environment preset="city" />
+        <GraphicsEngine />
       </Canvas>
     </div>
   );

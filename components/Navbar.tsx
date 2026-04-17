@@ -1,5 +1,5 @@
 import React from 'react';
-import { Search, Bell, Settings, Menu } from 'lucide-react';
+import { Search, Bell, Settings, Menu, Hammer, Wind } from 'lucide-react';
 import { User, Page } from '../types';
 
 interface NavbarProps {
@@ -22,17 +22,20 @@ export const Navbar: React.FC<NavbarProps> = ({ user, onToggleSidebar, onLogout,
           <Menu size={24} className="text-white" />
         </button>
         <div className="flex items-center gap-1 cursor-pointer" onClick={() => onNavigate(Page.HOME)}>
-           {/* VoxelSphere Logo */}
-           <div className="w-8 h-8 bg-blue-600 rounded-lg transform rotate-45 border-2 border-white flex items-center justify-center shadow-lg">
-             <div className="w-3 h-3 bg-white rounded-sm rotate-[-45deg]"></div>
+           {/* Glidrovia Logo: Hammer + Glider (Wind) */}
+           <div className="flex items-center gap-1">
+             <div className="w-8 h-8 bg-blue-600 rounded-lg border-2 border-white flex items-center justify-center shadow-lg relative">
+               <Hammer size={16} className="text-white absolute -top-1 -left-1 transform -rotate-12" />
+               <Wind size={16} className="text-white absolute -bottom-1 -right-1 transform rotate-12" />
+             </div>
+             <span className="text-2xl font-bold tracking-tight text-white hidden md:block font-['Gotham_SSm','Inter'] ml-2">
+               Glidrovia
+             </span>
            </div>
-           <span className="text-2xl font-bold tracking-tight text-white hidden md:block font-['Gotham_SSm','Inter'] ml-2">
-             VoxelSphere
-           </span>
         </div>
         <div className="hidden md:flex gap-6 ml-6 text-white font-medium text-sm">
             <a href="#" onClick={() => onNavigate(Page.GAMES)} className="hover:opacity-80 transition-opacity">Descubrir</a>
-            <a href="#" className="hover:opacity-80 transition-opacity text-gray-400">Tienda</a>
+            <a href="#" onClick={() => onNavigate(Page.STORE)} className="hover:opacity-80 transition-opacity text-gray-400">Tienda</a>
             <a href="#" onClick={() => onNavigate(Page.STUDIO)} className="hover:opacity-80 transition-opacity text-gray-400">Crear</a>
             <a href="#" className="hover:opacity-80 transition-opacity text-gray-400">Voxels</a>
         </div>
@@ -53,10 +56,17 @@ export const Navbar: React.FC<NavbarProps> = ({ user, onToggleSidebar, onLogout,
 
       {/* Right */}
       <div className="flex items-center gap-3 md:gap-4">
-        <button className="text-white hover:bg-white/10 p-2 rounded-full hidden sm:block">
+        <button className="text-white hover:bg-white/10 p-1 rounded-full hidden sm:block">
            <div className="flex items-center gap-1 bg-[#393b3d] px-3 py-1 rounded-full">
               <span className="w-4 h-4 bg-blue-500 rounded-sm rotate-45 flex items-center justify-center text-[8px] font-bold text-white">V</span>
               <span className="text-xs font-bold">{user.robux}</span>
+           </div>
+        </button>
+
+        <button className="text-white hover:bg-white/10 p-1 rounded-full hidden sm:block" onClick={() => onNavigate(Page.STORE)}>
+           <div className="flex items-center gap-1 bg-blue-600/20 border border-blue-500/30 px-3 py-1 rounded-full">
+              <span className="text-blue-400 text-[10px] font-black">D</span>
+              <span className="text-xs font-bold text-blue-400">{user.drovis || 0}</span>
            </div>
         </button>
         
@@ -73,9 +83,18 @@ export const Navbar: React.FC<NavbarProps> = ({ user, onToggleSidebar, onLogout,
           <Settings size={22} />
         </button>
         
-        <div className="w-8 h-8 rounded-full bg-gray-500 overflow-hidden border border-gray-600">
-           {/* Placeholder for user avatar in nav */}
-           <div className="w-full h-full bg-gradient-to-tr from-yellow-400 to-yellow-200"></div>
+        <div className="flex items-center gap-2">
+          <span className="text-white text-xs font-bold hidden lg:block">{user.displayName}</span>
+          <div className="w-8 h-8 rounded-full bg-gray-500 overflow-hidden border border-gray-600 cursor-pointer" onClick={() => onNavigate(Page.PROFILE)}>
+             {/* Placeholder for user avatar in nav */}
+             <div className="w-full h-full bg-gradient-to-tr from-yellow-400 to-yellow-200"></div>
+          </div>
+          <button 
+              onClick={onLogout}
+              className="text-xs text-gray-400 hover:text-white font-bold ml-1"
+          >
+            Salir
+          </button>
         </div>
       </div>
     </nav>
